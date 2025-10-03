@@ -39,9 +39,6 @@ if "last_results" not in st.session_state:
 # ---------------------------
 # Sidebar (collapsible groups)
 # ---------------------------
-# ---------------------------
-# Sidebar (collapsible groups)
-# ---------------------------
 with st.sidebar:
     # 1) Assignment Limits (kept as a top-level expander)
     with st.expander("Assignment Limits", expanded=False):
