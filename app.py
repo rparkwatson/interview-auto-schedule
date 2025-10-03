@@ -392,7 +392,7 @@ with st.expander("People"):
         "min_total": iv.min_total, "max_daily": iv.max_daily, "max_total": iv.max_total,
         "avail_count": len(iv.available_slots)
     } for iv in inputs.interviewers])
-    st.dataframe(_arrow_safe_scan_df(df_people), use_container_width=True)
+    st.dataframe(_arrow_safe_scan_df(df_people), width='stretch')
 
 with st.expander("Slots"):
     df_slots = pd.DataFrame([{
@@ -400,7 +400,7 @@ with st.expander("Slots"):
         "day": s.day_key, "cap_pairs": inputs.max_pairs_per_slot.get(s.id, 0),
         "adjacent": list(s.adjacent_forward)
     } for s in inputs.slots])
-    st.dataframe(_arrow_safe_scan_df(df_slots), use_container_width=True)
+    st.dataframe(_arrow_safe_scan_df(df_slots), width='stretch')
 
 # =========================
 #  Auto-scan (grid search)
@@ -573,7 +573,7 @@ if run_autoscan:
 
         # Clean a copy for display (avoid Arrow overflow). Top 50 is small; no row cap needed.
         df_scan_view = _arrow_safe_scan_df(df_scan_top, max_rows=None)
-        st.dataframe(df_scan_view, use_container_width=True)
+        st.dataframe(df_scan_view, width='stretch')
 
         # CSV download of ALL scenarios
         csv_bytes = df_scan_sorted.to_csv(index=False).encode("utf-8")
@@ -814,7 +814,7 @@ with st.expander("Regular vs Adcom summary"):
          "Share of Used (%)": round(adcom_share_used, 1),
          "Pct of Capacity (%)": round(adcom_pct_capacity, 1)},
     ])
-    st.dataframe(_arrow_safe_scan_df(df_group), use_container_width=True)
+    st.dataframe(_arrow_safe_scan_df(df_group), width='stretch')
 
 # Persist run history with DEFAULT LIMITS snapshot
 if "run_history" not in st.session_state:
@@ -883,14 +883,14 @@ if st.session_state.run_history:
     except Exception:
         df_hist = df_hist.sort_values("Run #", ascending=False)
     st.markdown("#### Run history")
-    st.dataframe(_arrow_safe_scan_df(df_hist), use_container_width=True)
+    st.dataframe(_arrow_safe_scan_df(df_hist), width='stretch')
 
 with st.expander("Per Date_Time room usage"):
     df_slots_summary = pd.DataFrame([
         {"Date_Time": t, "Used_Rooms": rooms_used_by_t[t], "Capacity": int(cap_map.get(t, 0))}
         for t in slot_ids
     ])
-    st.dataframe(_arrow_safe_scan_df(df_slots_summary), use_container_width=True)
+    st.dataframe(_arrow_safe_scan_df(df_slots_summary), width='stretch')
 
 # ----------------
 # Detailed tables
@@ -903,7 +903,6 @@ slot_df = pd.DataFrame([
     {"slot_id": t, "assigned": ", ".join(sorted(v)), "#people": len(v), "pairs": pairs.get(t, 0)}
     for t, v in by_slot.items()
 ]).sort_values(["slot_id"]) if by_slot else pd.DataFrame(columns=["slot_id","assigned","#people","pairs"])
-st.dataframe(_arrow_safe_scan_df(slot_df), use_container_width=True)
 
 by_i = collections.defaultdict(list)
 for (i, t), v in assign.items():
@@ -913,4 +912,27 @@ iv_df = pd.DataFrame([
     {"interviewer": i, "count_model": len(ts), "slots": ", ".join(sorted(ts))}
     for i, ts in by_i.items()
 ]).sort_values(["interviewer"]) if by_i else pd.DataFrame(columns=["interviewer","count_model","slots"])
-st.dataframe(_arrow_safe_scan_df(iv_df), use_container_width=True)
+
+# --- one collapsed section with tabs ---
+with st.expander("Detailed assignments", expanded=False):
+    tabs = st.tabs(["By slot", "By interviewer"])
+    with tabs[0]:
+        st.dataframe(_arrow_safe_scan_df(slot_df), width='stretch')
+        # Optional: CSV export for this view
+        st.download_button(
+            "⬇️ Download 'By slot' CSV",
+            slot_df.to_csv(index=False).encode("utf-8"),
+            file_name="assignments_by_slot.csv",
+            mime="text/csv",
+            key="dl_by_slot_csv",
+        )
+    with tabs[1]:
+        st.dataframe(_arrow_safe_scan_df(iv_df), width='stretch')
+        # Optional: CSV export for this view
+        st.download_button(
+            "⬇️ Download 'By interviewer' CSV",
+            iv_df.to_csv(index=False).encode("utf-8"),
+            file_name="assignments_by_interviewer.csv",
+            mime="text/csv",
+            key="dl_by_interviewer_csv",
+        )
