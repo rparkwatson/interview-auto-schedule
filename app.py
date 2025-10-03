@@ -228,40 +228,40 @@ with st.sidebar:
         w_total = 20
 
         # Initialize defaults once (no-op if keys already set)
-        _init_range_state("reg_max_daily_range", 0, 24, int(reg_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("reg_max_total_range", 0, 999, int(reg_max_total), width=w_total, step=int(granularity))
-        _init_range_state("reg_min_total_range", 0, 999, int(reg_min_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_daily_range", 0, 10, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 10, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 10, int(reg_min_total), width=w_total, step=int(granularity))
 
-        _init_range_state("sen_max_daily_range", 0, 24, int(sen_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 999, int(sen_max_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_min_total_range", 0, 999, int(sen_min_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_daily_range", 0, 10, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 10, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 10, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
         st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "Regular max/day", 0, 24, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 10, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "Regular max total", 0, 999, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 10, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
-            "Regular min total", 0, 999, st.session_state["reg_min_total_range"],
+            "Regular min total", 0, 10, st.session_state["reg_min_total_range"],
             step=int(granularity), key="reg_min_total_range"
         )
 
         st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
-            "Adcom max/day", 0, 24, st.session_state["sen_max_daily_range"],
+            "Adcom max/day", 0, 10, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
         )
         sen_max_total_min, sen_max_total_max = st.slider(
-            "Adcom max total", 0, 999, st.session_state["sen_max_total_range"],
+            "Adcom max total", 0, 10, st.session_state["sen_max_total_range"],
             step=int(granularity), key="sen_max_total_range"
         )
         sen_min_total_min, sen_min_total_max = st.slider(
-            "Adcom min total", 0, 999, st.session_state["sen_min_total_range"],
+            "Adcom min total", 0, 10, st.session_state["sen_min_total_range"],
             step=int(granularity), key="sen_min_total_range"
         )
 
