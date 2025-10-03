@@ -148,7 +148,7 @@ with st.sidebar:
             year = st.number_input("Calendar year", 2000, 2100, 2025, key="year", on_change=_mark_dirty)
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty)
 
-    # 3) Auto-scan Defaults (SLIDER-BASED with Option A defaults)
+    # 3) Auto-scan Defaults
     with st.expander("Auto-scan defaults (experimental)", expanded=False):
         st.caption(
             "Pick ranges (inclusive). The solver will try every combination and rank by "
@@ -160,44 +160,44 @@ with st.sidebar:
 
         # Option A: wider defaults ON FIRST RENDER (and after upload reset).
         # Use ±3 for per-day, ±10 for totals/min totals (full width 6/20).
-        w_day = 6
-        w_total = 20
+        w_day = 3
+        w_total = 10
 
         # Initialize defaults once (no-op if keys already set)
-        _init_range_state("reg_max_daily_range", 0, 24, int(reg_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("reg_max_total_range", 0, 999, int(reg_max_total), width=w_total, step=int(granularity))
-        _init_range_state("reg_min_total_range", 0, 999, int(reg_min_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_daily_range", 0, 6, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 20, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 20, int(reg_min_total), width=w_total, step=int(granularity))
 
-        _init_range_state("sen_max_daily_range", 0, 24, int(sen_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 999, int(sen_max_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_min_total_range", 0, 999, int(sen_min_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_daily_range", 0, 6, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 20, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 20, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
         st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "Regular max/day", 0, 24, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 6, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "Regular max total", 0, 999, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 20, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
-            "Regular min total", 0, 999, st.session_state["reg_min_total_range"],
+            "Regular min total", 0, 20, st.session_state["reg_min_total_range"],
             step=int(granularity), key="reg_min_total_range"
         )
 
         st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
-            "Adcom max/day", 0, 24, st.session_state["sen_max_daily_range"],
+            "Adcom max/day", 0, 6, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
         )
         sen_max_total_min, sen_max_total_max = st.slider(
-            "Adcom max total", 0, 999, st.session_state["sen_max_total_range"],
+            "Adcom max total", 0, 20, st.session_state["sen_max_total_range"],
             step=int(granularity), key="sen_max_total_range"
         )
         sen_min_total_min, sen_min_total_max = st.slider(
-            "Adcom min total", 0, 999, st.session_state["sen_min_total_range"],
+            "Adcom min total", 0, 20, st.session_state["sen_min_total_range"],
             step=int(granularity), key="sen_min_total_range"
         )
 
@@ -207,7 +207,7 @@ with st.sidebar:
 
         # Per-scenario config
         scan_time_limit = st.number_input(
-            "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
+            "Time limit per scenario (s)", 5, 120, min(60, int(time_limit)),
             key="scan_time_limit"
         )
         max_scenarios_warn = st.number_input(
