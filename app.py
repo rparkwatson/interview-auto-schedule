@@ -1,124 +1,27 @@
 from __future__ import annotations
 import json
-from datetime import datetime, timedelta
-import itertools
-import io
-import math
-from dataclasses import dataclass
-from typing import Iterable
-
-import numpy as np
+from datetime import datetime
+import collections
 import pandas as pd
+import numpy as np
 import streamlit as st
+import io
+import itertools
 
-# -----------------------------------------------------------------------------
-# Domain models (minimal stubs shown here; replace with your actual imports)
-# -----------------------------------------------------------------------------
-@dataclass(frozen=True)
-class Slot:
-    id: str
-    start: datetime
-    end: datetime
-    day_key: str
-    adjacent_forward: frozenset[str]
-
-@dataclass(frozen=True)
-class Interviewer:
-    id: str
-    name: str
-    kind: str  # "Regular" | "Senior"
-
-@dataclass
-class Inputs:
-    interviewers: list[Interviewer]
-    slots: list[Slot]
-    max_pairs_per_slot: dict[str, int]
-
-@dataclass
-class Settings:
-    time_limit_s: float = 120.0
-    threads: int = 0
-    back_to_back_mode: str = "soft"  # "soft" | "hard" | "off"
-    observer_extra_per_slot: int = 0
-    w_pairs: int = 1_000_000
-    w_fill: int = 1_000
-    w_b2b: int = 1
-    adjacency_grace_min: int = 0
-    scarcity_bonus: int = 0
-    w_fill_adcom: int = 0
-    day_caps: dict[str, int] | None = None
-
-# ----------------------------------------------------------------------------
-# External hooks (replace with your real project functions)
-# ----------------------------------------------------------------------------
-
-def read_inputs_from_legacy(workbook, *, year: int, slot_minutes: int, defaults: dict) -> Inputs:
-    """Placeholder legacy parser: swap with the real importer."""
-    # In real code, parse workbook and construct domain objects.
-    now = datetime(year, 10, 1, 9, 0)
-    slots = []
-    for d in range(3):
-        for h in range(6):
-            s = now + timedelta(days=d, minutes=h*slot_minutes)
-            e = s + timedelta(minutes=slot_minutes)
-            slots.append(Slot(
-                id=f"{d}-{h}", start=s, end=e, day_key=s.strftime("%Y-%m-%d"), adjacent_forward=frozenset()
-            ))
-    ints = [Interviewer(id=f"r{i}", name=f"Reg {i}", kind="Regular") for i in range(20)]
-    ints += [Interviewer(id=f"s{i}", name=f"Sen {i}", kind="Senior") for i in range(5)]
-    cap = {sl.id: 10 for sl in slots}
-    return Inputs(interviewers=ints, slots=slots, max_pairs_per_slot=cap)
-
-
-def build_adjacency(slots: Iterable[Slot], grace_min: int) -> dict[str, tuple[str, ...]]:
-    """Placeholder adjacency builder."""
-    return {s.id: tuple() for s in slots}
-
-
-def greedy_seed(inputs: Inputs):
-    return {}
-
-
-def solve_weighted(inputs: Inputs, cfg: Settings, *, hint=None) -> dict:
-    """Placeholder CP-SAT result; replace with your solver."""
-    # Create a fake optimal solution using up to capacity
-    slot_ids = [s.id for s in inputs.slots]
-    pairs = {t: min(2, inputs.max_pairs_per_slot.get(t, 0)) for t in slot_ids}
-    adcom = {t: min(1, max(0, inputs.max_pairs_per_slot.get(t, 0) - pairs[t])) for t in slot_ids}
-    return {
-        "status": "OPTIMAL",
-        "assign": {},  # not used by the dashboard when pairs/adcom_singles present
-        "pairs": pairs,
-        "adcom_singles": adcom,
-        "objective": 1234,
-    }
-
-
-def make_excel_report(inputs: Inputs, assign: dict, *, path: str) -> str:
-    with open(path, "wb") as f:
-        f.write(b"EXCEL_PLACEHOLDER")
-    return path
+from scheduler.config import Settings
+from scheduler.io.read import read_inputs_from_legacy
+from scheduler.io.write import make_excel_report
+from scheduler.preprocess.calendar import build_adjacency
+from scheduler.heuristics.seed import greedy_seed
+from scheduler.solvers.cpsat import solve_weighted
+from scheduler.domain import Slot, Inputs as Inp
 
 # ---------------------------
 # Utilities
 # ---------------------------
-
-def _sanity_check_slot_durations(inputs_obj, expected_minutes: int):
-    """Warn if any slots have a duration different from expected minutes."""
-    try:
-        exp = pd.Timedelta(minutes=int(expected_minutes))
-        mismatches = [s for s in getattr(inputs_obj, "slots", []) if (s.end - s.start) != exp]
-        if mismatches:
-            st.warning(f"{len(mismatches)} slot(s) differ from expected {int(expected_minutes)}-minute duration. Check workbook/reader.")
-    except Exception:
-        # Non-fatal; only a UI warning
-        pass
-
-
 def _mark_dirty():
     """Mark results as stale due to a setting change."""
     st.session_state["needs_rerun"] = True
-
 
 def _on_upload_change():
     """When a new file is uploaded, mark stale and clear last results + slider defaults."""
@@ -133,7 +36,6 @@ def _on_upload_change():
     # Optional: also clear run history on new upload
     # st.session_state.pop("run_history", None)
 
-
 def _build_range(lo: int, hi: int, step: int) -> list[int]:
     """Inclusive integer range with guards."""
     lo = int(lo); hi = int(hi); step = max(1, int(step))
@@ -141,36 +43,46 @@ def _build_range(lo: int, hi: int, step: int) -> list[int]:
         lo, hi = hi, lo
     return list(range(lo, hi + 1, step))
 
-
-def _init_range_state(key: str, lo: int, hi: int, center: int, *, width: int, step: int) -> None:
-    """Initialize a slider range around a center value only once."""
-    if key in st.session_state:
+def _init_range_state(state_key: str, min_v: int, max_v: int, seed: int, width: int, step: int):
+    """
+    Initialize st.session_state[state_key] to a wider (lo, hi) range centered on seed.
+    - width is the full span, in the same units as the slider.
+    - snaps lo/hi to the step and clamps to [min_v, max_v].
+    Does nothing if the key already exists (i.e., user already interacted).
+    """
+    if state_key in st.session_state:
         return
-    w = int(width)
-    lo2 = max(lo, center - w//2)
-    hi2 = min(hi, center + w//2)
-    # Snap to step grid
-    def snap(x):
-        base = lo
-        k = round((x - base)/step)
-        return int(base + k*step)
-    st.session_state[key] = (snap(lo2), snap(hi2))
+    step = max(1, int(step))
+    seed = int(seed)
+    min_v, max_v = int(min_v), int(max_v)
+    width = max(step, int(width))
+    half = max(step, width // 2)
 
+    lo = max(min_v, seed - half)
+    hi = min(max_v, seed + half)
 
-def _compute_rooms_metrics(inputs_local: Inputs, res_local: dict, assign_local: dict) -> tuple[int, int, int]:
-    """Compute (rooms_filled, reg_pairs, capacity) from result/assignments."""
+    # snap to step grid
+    def _snap(x):
+        return min(max_v, max(min_v, ((x - min_v) // step) * step + min_v))
+    lo = _snap(lo)
+    hi = _snap(hi)
+    if lo > hi:
+        hi = min(max_v, lo + step)
+
+    st.session_state[state_key] = (lo, hi)
+
+def _compute_rooms_metrics(inputs_local, res_local, assign_local):
+    """Returns (rooms_filled, regular_pairs, capacity). Works with new/old solver outputs."""
+    pairs_local = res_local.get("pairs", {})
+    adcom_singles_local = res_local.get("adcom_singles")
     slot_ids_local = [s.id for s in inputs_local.slots]
     cap_map_local = inputs_local.max_pairs_per_slot
+    iv_by_id_local = {iv.id: iv for iv in inputs_local.interviewers}
 
-    pairs_local = res_local.get("pairs", {})
-    adcom_local = res_local.get("adcom_singles")
-
-    if pairs_local and adcom_local is not None:
-        rooms_filled = int(sum(int(pairs_local.get(t, 0)) + int(adcom_local.get(t, 0)) for t in slot_ids_local))
+    if adcom_singles_local is not None:
+        rooms_filled = int(sum(int(pairs_local.get(t, 0)) + int(adcom_singles_local.get(t, 0)) for t in slot_ids_local))
         reg_pairs = int(sum(int(pairs_local.get(t, 0)) for t in slot_ids_local))
     else:
-        # fallback from raw assign
-        iv_by_id_local = {iv.id: iv for iv in inputs_local.interviewers}
         reg_people_by_t_local = {t: 0 for t in slot_ids_local}
         adcom_people_by_t_local = {t: 0 for t in slot_ids_local}
         for (i, t), v in assign_local.items():
@@ -187,12 +99,11 @@ def _compute_rooms_metrics(inputs_local: Inputs, res_local: dict, assign_local: 
     capacity = int(sum(int(cap_map_local.get(t, 0)) for t in slot_ids_local))
     return rooms_filled, reg_pairs, capacity
 
-
 def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
     """
-    Prepare the auto-scan DataFrame for st.dataframe() to avoid Arrow overflows and casting errors.
+    Prepare a DataFrame for st.dataframe() to avoid Arrow/casting errors.
     - Coerces numeric columns
-    - Uses Int64 only when values are integer-like; otherwise keeps float64
+    - Uses Int64 only when values are truly integer-like; otherwise keeps float64
     - Replaces ±inf with NaN
     - Optionally limits to top `max_rows`
     - Truncates long Status cells
@@ -209,8 +120,9 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
         "Scenario #", "Rooms Filled", "Reg Pairs", "Capacity",
         "reg_max/day", "reg_max_total", "reg_min_total",
         "adcom_max/day", "adcom_max_total", "adcom_min_total",
+        "Run #", "Filled",  # include history columns just in case
     ]
-    FLOAT_COLS = ["Percent Filled", "Objective"]
+    FLOAT_COLS = ["Percent Filled", "Objective", "Pct of Capacity (%)", "Share of Used (%)"]
 
     # Normalize floats
     for c in FLOAT_COLS:
@@ -219,30 +131,36 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
             s = s.replace([np.inf, -np.inf], np.nan)
             safe[c] = s
 
-    # Helper: all non-null values are whole numbers (with tolerance)
+    # Helper: treat as integer-like only if every non-null value is within epsilon of an integer
     def _int_like(series: pd.Series) -> bool:
-        vals = pd.to_numeric(series, errors="coerce")
-        vals = vals[vals.notna()]
-        if vals.empty:
+        v = pd.to_numeric(series, errors="coerce")
+        v = v[~v.isna()].astype(float)
+        if v.empty:
             return True
-        return bool(np.all(np.isfinite(vals) & np.isclose(vals, np.round(vals)))))
+        return np.isfinite(v).all() and np.isclose(v % 1, 0).all()
 
-    # Integer candidates: only cast to Int64 when safe; otherwise keep as float
+    # Integer candidates: only cast to Int64 when truly safe; otherwise keep as float
     for c in INT_CANDIDATES:
         if c in safe.columns:
             vals = pd.to_numeric(safe[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
             if _int_like(vals):
-                r = vals.round(0)
-                mask = r.isna().to_numpy()
-                int_vals = r.fillna(0).astype("int64").to_numpy()
-                safe[c] = pd.Series(pd.arrays.IntegerArray(int_vals, mask), dtype="Int64")
+                try:
+                    safe[c] = vals.astype("Int64")  # no rounding; cast only if integral already
+                except TypeError:
+                    safe[c] = vals.astype(float)
             else:
-                safe[c] = vals  # remains float64 with NaN allowed
+                safe[c] = vals.astype(float)
 
     if "Status" in safe.columns:
         safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
 
     return safe
+
+def _to_int_or_none(x):
+    try:
+        return int(x) if pd.notna(x) else None
+    except Exception:
+        return None
 
 # ---------------------------
 # App init
@@ -261,13 +179,12 @@ with st.sidebar:
     # 1) Assignment Limits
     with st.expander("Assignment Limits", expanded=False):
         st.markdown("**Select Group Constraints**")
-        reg_max_daily = st.number_input("Regular MAX per day", 0, 10, 6, key="reg_max_daily", on_change=_mark_dirty)
-        reg_max_total = st.number_input("Regular MAX total", 0, 50, 10, key="reg_max_total", on_change=_mark_dirty)
-        reg_min_total = st.number_input("Regular MIN total", 0, 50, 0, key="reg_min_total", on_change=_mark_dirty)
-
-        sen_max_daily = st.number_input("Adcom MAX per day", 0, 10, 5, key="sen_max_daily", on_change=_mark_dirty)
-        sen_max_total = st.number_input("Adcom MAX total", 0, 50, 5, key="sen_max_total", on_change=_mark_dirty)
-        sen_min_total = st.number_input("Adcom MIN total", 0, 50, 0, key="sen_min_total", on_change=_mark_dirty)
+        reg_max_daily = st.number_input("Regular MAX per day", 0, 24, 2, key="reg_max_daily", on_change=_mark_dirty)
+        reg_max_total = st.number_input("Regular MAX total", 0, 999, 7, key="reg_max_total", on_change=_mark_dirty)
+        reg_min_total = st.number_input("Regular MIN total", 0, 999, 5, key="reg_min_total", on_change=_mark_dirty)
+        sen_max_daily = st.number_input("Adcom MAX per day", 0, 24, 2, key="sen_max_daily", on_change=_mark_dirty)
+        sen_max_total = st.number_input("Adcom MAX total", 0, 999, 5, key="sen_max_total", on_change=_mark_dirty)
+        sen_min_total = st.number_input("Adcom MIN total", 0, 999, 0, key="sen_min_total", on_change=_mark_dirty)
 
     # 2) Settings
     with st.expander("Settings", expanded=False):
@@ -280,12 +197,14 @@ with st.sidebar:
 
         with st.expander("Objective Weights", expanded=False):
             w_pairs = st.number_input("Weight: pairs", 1000, 5_000_000, 1_000_000, step=1000, key="w_pairs", on_change=_mark_dirty)
-            w_fill = st.number_input("Weight: fill (Regular rooms)", 0, 5_000_000, 1_000, step=100, key="w_fill", on_change=_mark_dirty)
-            w_b2b = st.number_input("Weight: back-to-back comfort", 0, 5_000_000, 1, step=1, key="w_b2b", on_change=_mark_dirty)
-            scarcity_bonus = st.number_input("Scarcity bonus", 0, 1000, 0, key="scarcity_bonus", on_change=_mark_dirty)
-            w_fill_adcom = st.number_input("Weight: fill (Adcom rooms)", 0, 5_000_000, 0, step=100, key="w_fill_adcom", on_change=_mark_dirty)
+            w_fill = st.number_input("Weight: fill (Regulars)", 10, 100_000, 1000, step=10, key="w_fill", on_change=_mark_dirty)
+            w_b2b = st.number_input("Penalty: back-to-back", 0, 1000, 1, key="w_b2b", on_change=_mark_dirty)
 
-        with st.expander("Day Capacities (optional)", expanded=False):
+        with st.expander("Scarcity Priority", expanded=False):
+            scarcity_bonus = st.number_input("Scarcity bonus (per missing Regular)", 0, 100, 5, key="scarcity_bonus", on_change=_mark_dirty)
+            w_fill_adcom = st.number_input("Weight: fill (Adcom)", 0, 100_000, 500, step=10, key="w_fill_adcom", on_change=_mark_dirty)
+
+        with st.expander("Global day caps (optional)", expanded=False):
             st.caption('JSON mapping of day -> cap, e.g. {"2025-10-01": 120}')
             day_caps_text = st.text_area("Day caps JSON", value="", key="day_caps_text", on_change=_mark_dirty)
 
@@ -309,63 +228,103 @@ with st.sidebar:
         w_total = 20
 
         # Initialize defaults once (no-op if keys already set)
-        _init_range_state("reg_max_daily_range", 0, 10, int(reg_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("reg_max_total_range", 0, 50, int(reg_max_total), width=w_total, step=int(granularity))
-        _init_range_state("reg_min_total_range", 0, 50, int(reg_min_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_daily_range", 0, 24, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 999, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 999, int(reg_min_total), width=w_total, step=int(granularity))
 
-        _init_range_state("sen_max_daily_range", 0, 10, int(sen_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 50, int(sen_max_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_min_total_range", 0, 50, int(sen_min_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_daily_range", 0, 24, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 999, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 999, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
         st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "Regular max/day", 0, 10, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 24, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "Regular max total", 0, 50, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 999, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
-            "Regular min total", 0, 50, st.session_state["reg_min_total_range"],
+            "Regular min total", 0, 999, st.session_state["reg_min_total_range"],
             step=int(granularity), key="reg_min_total_range"
         )
 
-        st.markdown("**Adcom**")
+        st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
-            "Adcom max/day", 0, 10, st.session_state["sen_max_daily_range"],
+            "Adcom max/day", 0, 24, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
         )
         sen_max_total_min, sen_max_total_max = st.slider(
-            "Adcom max total", 0, 50, st.session_state["sen_max_total_range"],
+            "Adcom max total", 0, 999, st.session_state["sen_max_total_range"],
             step=int(granularity), key="sen_max_total_range"
         )
         sen_min_total_min, sen_min_total_max = st.slider(
-            "Adcom min total", 0, 50, st.session_state["sen_min_total_range"],
+            "Adcom min total", 0, 999, st.session_state["sen_min_total_range"],
             step=int(granularity), key="sen_min_total_range"
         )
 
-        # Step values for the ranges
-        reg_max_daily_step = st.number_input("Step: Regular max/day", 1, 10, int(granularity))
-        reg_max_total_step = st.number_input("Step: Regular max total", 1, 50, int(granularity))
-        reg_min_total_step = st.number_input("Step: Regular min total", 1, 50, int(granularity))
+        # Mirror per-field step vars so the rest of the code uses them
+        reg_max_daily_step = reg_max_total_step = reg_min_total_step = int(granularity)
+        sen_max_daily_step = sen_max_total_step = sen_min_total_step = int(granularity)
 
-        sen_max_daily_step = st.number_input("Step: Adcom max/day", 1, 10, int(granularity))
-        sen_max_total_step = st.number_input("Step: Adcom max total", 1, 50, int(granularity))
-        sen_min_total_step = st.number_input("Step: Adcom min total", 1, 50, int(granularity))
+        # Per-scenario config
+        scan_time_limit = st.number_input(
+            "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
+            key="scan_time_limit"
+        )
+        max_scenarios_warn = st.number_input(
+            "Warn if scenarios exceed", 1, 500, 100, key="max_scenarios_warn"
+        )
 
-        max_scenarios_warn = st.number_input("Warn if scenarios >", 10, 10_000, 500)
+        # Scenario count estimate
+        _est = (
+            len(_build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)) *
+            len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
+            len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
+            len(_build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)) *
+            len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
+            len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
+        )
+        st.caption(f"Estimated scenarios: **{_est:,}**")
 
-        run_autoscan = st.button("Run auto-scan", type="secondary")
+        run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
-# ---------- Main content (file upload + parsing) ----------
-up = st.file_uploader("Upload legacy workbook (.xlsx)", type=["xlsx"], on_change=_on_upload_change)
+# Build Settings from sidebar values
+cfg = Settings(
+    time_limit_s=float(time_limit),
+    threads=int(threads),
+    back_to_back_mode=b2b_mode,
+    observer_extra_per_slot=int(observer_extra),
+    w_pairs=int(w_pairs),
+    w_fill=int(w_fill),
+    w_b2b=int(w_b2b),
+    adjacency_grace_min=int(adjacency_grace),
+    scarcity_bonus=int(scarcity_bonus),
+    w_fill_adcom=int(w_fill_adcom),
+)
+if day_caps_text.strip():
+    try:
+        cfg.day_caps = {str(k): int(v) for k, v in json.loads(day_caps_text).items()}
+    except Exception as e:
+        st.warning(f"Ignoring day caps: {e}")
+
+# ---------------------------
+# Main content
+# ---------------------------
+st.markdown("### 1) Upload your workbook")
+up = st.file_uploader(
+    "Upload your original workbook (tabs: Max_Pairs_Per_Slot, Master_Availability_Sheet, Adcom_Availability)",
+    type=["xlsx"], key="up", on_change=_on_upload_change
+)
+
 if not up:
-    st.info("Upload the workbook to begin.")
+    if st.session_state.get("needs_rerun") and st.session_state.get("last_results"):
+        st.info("Settings changed since last run. Upload a workbook and re-run the scheduler.")
     st.stop()
 
-# Quick sniff: legacy vs new format
+# Detect legacy format
 try:
     xls_preview = pd.ExcelFile(up)
     sheets = set(xls_preview.sheet_names)
@@ -393,7 +352,6 @@ try:
             "senior_min_total": int(sen_min_total),
         }
     )
-    _sanity_check_slot_durations(inputs, expected_minutes=int(slot_minutes))
 except Exception as e:
     st.error(f"Failed to parse legacy workbook: {e}")
     st.stop()
@@ -407,28 +365,17 @@ slots2 = [
     )
     for s in inputs.slots
 ]
-inputs_view = Inputs(
+inputs = Inp(
     interviewers=inputs.interviewers,
     slots=slots2,
     max_pairs_per_slot=inputs.max_pairs_per_slot
 )
 
-# Compose Settings
-cfg = Settings(
-    time_limit_s=float(time_limit),
-    threads=int(threads),
-    back_to_back_mode=str(b2b_mode),
-    observer_extra_per_slot=int(observer_extra),
-    w_pairs=int(w_pairs),
-    w_fill=int(w_fill),
-    w_b2b=int(w_b2b),
-    adjacency_grace_min=int(adjacency_grace),
-    scarcity_bonus=int(scarcity_bonus),
-    w_fill_adcom=int(w_fill_adcom),
-    day_caps=(json.loads(day_caps_text) if day_caps_text.strip() else None),
-)
+# Ensure we always have the inputs used for the currently displayed results
+if "inputs_for_results" not in st.session_state:
+    st.session_state["inputs_for_results"] = inputs
 
-# --- Preview ---
+# Preview
 st.markdown("### 2) Data preview")
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -439,14 +386,21 @@ with c3:
     st.metric("Slots with capacity", sum(1 for v in inputs.max_pairs_per_slot.values() if v > 0))
 
 with st.expander("People"):
-    st.dataframe(pd.DataFrame([{ "id": iv.id, "name": iv.name, "kind": iv.kind } for iv in inputs.interviewers]))
+    df_people = pd.DataFrame([{
+        "id": iv.id, "name": iv.name, "kind": iv.kind,
+        "pre_assigned": iv.pre_assigned,
+        "min_total": iv.min_total, "max_daily": iv.max_daily, "max_total": iv.max_total,
+        "avail_count": len(iv.available_slots)
+    } for iv in inputs.interviewers])
+    st.dataframe(_arrow_safe_scan_df(df_people), use_container_width=True)
 
 with st.expander("Slots"):
-    st.dataframe(pd.DataFrame([{
+    df_slots = pd.DataFrame([{
         "slot_id": s.id, "start": s.start, "end": s.end,
         "day": s.day_key, "cap_pairs": inputs.max_pairs_per_slot.get(s.id, 0),
         "adjacent": list(s.adjacent_forward)
-    } for s in inputs.slots]))
+    } for s in inputs.slots])
+    st.dataframe(_arrow_safe_scan_df(df_slots), use_container_width=True)
 
 # =========================
 #  Auto-scan (grid search)
@@ -495,7 +449,6 @@ if run_autoscan:
                     "senior_min_total": int(s_mn),
                 }
             )
-            _sanity_check_slot_durations(inputs_i, expected_minutes=int(slot_minutes))
         except Exception as e:
             results_rows.append({
                 "Scenario #": idx,
@@ -508,16 +461,14 @@ if run_autoscan:
             prog.progress(idx/len(grid))
             continue
 
-        # Build adjacency (again, fast)
+        # Build adjacency (same grace as current cfg)
         nexts_i = build_adjacency(inputs_i.slots, grace_min=cfg.adjacency_grace_min)
         slots2_i = [
-            Slot(
-                id=s.id, start=s.start, end=s.end, day_key=s.day_key,
-                adjacent_forward=frozenset(nexts_i.get(s.id, tuple()))
-            )
+            Slot(id=s.id, start=s.start, end=s.end, day_key=s.day_key,
+                 adjacent_forward=frozenset(nexts_i.get(s.id, tuple())))
             for s in inputs_i.slots
         ]
-        inputs_i_view = Inputs(
+        inputs_i = Inp(
             interviewers=inputs_i.interviewers,
             slots=slots2_i,
             max_pairs_per_slot=inputs_i.max_pairs_per_slot
@@ -525,7 +476,7 @@ if run_autoscan:
 
         # Shortened time limit per scenario to keep scans practical
         cfg_scan = Settings(
-            time_limit_s=float(time_limit),
+            time_limit_s=float(scan_time_limit),
             threads=cfg.threads,
             back_to_back_mode=cfg.back_to_back_mode,
             observer_extra_per_slot=cfg.observer_extra_per_slot,
@@ -540,8 +491,8 @@ if run_autoscan:
 
         # Seed + solve
         try:
-            hint_i = greedy_seed(inputs_i_view)
-            res_i = solve_weighted(inputs_i_view, cfg_scan, hint=hint_i)
+            hint_i = greedy_seed(inputs_i)
+            res_i = solve_weighted(inputs_i, cfg_scan, hint=hint_i)
         except Exception as e:
             results_rows.append({
                 "Scenario #": idx,
@@ -560,26 +511,14 @@ if run_autoscan:
         objective = float(res_i.get("objective", 0.0))
         status = res_i.get("status", "UNKNOWN")
 
-        # --- Guard non-OPTIMAL scenarios and clamp ---
-        if status != "OPTIMAL":
-            rooms_filled = 0
-            reg_pairs = 0
-            pct = 0.0 if capacity else 0.0
-            objective = float("nan")
-        else:
-            cap_i = int(capacity or 0)
-            rooms_filled = int(max(0, min(int(rooms_filled), cap_i)))
-            reg_pairs    = int(max(0, min(int(reg_pairs),    cap_i)))
-            pct = 0.0 if cap_i == 0 else 100.0 * rooms_filled / cap_i
-
         row = {
             "Scenario #": idx,
             "Status": status,
             "Rooms Filled": rooms_filled,
             "Reg Pairs": reg_pairs,
             "Capacity": capacity,
-            "Percent Filled": round(pct, 2) if pct is not None else None,
-            "Objective": objective,
+            "Percent Filled": None if pct is None else round(pct, 1),
+            "Objective": round(objective, 0),
             "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
             "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
         }
@@ -599,6 +538,7 @@ if run_autoscan:
     # Show results table (TOP 50 by % filled, then reg pairs, then objective)
     if results_rows:
         df_scan = pd.DataFrame(results_rows)
+
         # Coerce numeric columns for robust sorting
         df_scan["Percent Filled"] = pd.to_numeric(df_scan["Percent Filled"], errors="coerce")
         df_scan["Reg Pairs"] = pd.to_numeric(df_scan["Reg Pairs"], errors="coerce")
@@ -621,14 +561,18 @@ if run_autoscan:
 
         # CSV download of ALL scenarios
         csv_bytes = df_scan_sorted.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download all scenarios (CSV)", csv_bytes, file_name="autoscan_results.csv", mime="text/csv")
+        st.download_button(
+            "⬇️ Download all auto-scan results (CSV)",
+            csv_bytes,
+            file_name="autoscan_results.csv",
+            mime="text/csv",
+            key="dl_autoscan_csv",
+        )
 
-        # Best scenario banner
         if best is not None:
             best_row = best[2]
             st.success(
                 f"Best scenario → % Filled: {best_row['Percent Filled']} | "
-                f"Rooms: {best_row['Rooms Filled']}/{best_row['Capacity']} • "
                 f"Reg Pairs: {best_row['Reg Pairs']} | Objective: {best_row['Objective']}"
             )
             # Button to apply the best defaults back into the sidebar
@@ -644,6 +588,11 @@ if run_autoscan:
 
         # --- Run any of the top scenarios (skip rows with missing defaults) ---
         st.markdown("#### Run any of the top scenarios")
+        try:
+            file_bytes = up.getvalue()
+        except Exception:
+            file_bytes = None
+
         for _, row in df_scan_top.iterrows():
             required_keys = [
                 "reg_max/day","reg_max_total","reg_min_total",
@@ -651,7 +600,8 @@ if run_autoscan:
             ]
             # Show line without a Run button if any defaults are missing/not-a-number
             if any(pd.isna(row[k]) for k in required_keys):
-                scen_label = int(row["Scenario #"]) if pd.notna(row["Scenario #"]) else "—"
+                scen_label = _to_int_or_none(row["Scenario #"])
+                scen_label = scen_label if scen_label is not None else "—"
                 st.write(
                     f"**Scenario #{scen_label}** — Status: {row['Status']} • "
                     f"Rooms: {row['Rooms Filled']} • Reg Pairs: {row['Reg Pairs']} • "
@@ -659,12 +609,20 @@ if run_autoscan:
                 )
                 continue
 
-            scn_id = int(row["Scenario #"]) if pd.notna(row["Scenario #"]) else 0
-            with st.expander(f"Scenario #{scn_id}"):
+            scn_id = _to_int_or_none(row["Scenario #"])
+            if scn_id is None:
+                # Fallback label if somehow missing
+                scn_id = int(len(results_rows))  # arbitrary but stable-ish
+
+            cols = st.columns([6, 1])
+            with cols[0]:
                 st.write(
-                    f"Status: {row['Status']} • Rooms: {row['Rooms Filled']} "
-                    f"/ {row['Capacity']} • Reg Pairs: {row['Reg Pairs']} • Obj: {row['Objective']}"
+                    f"**Scenario #{scn_id}** — Status: {row['Status']} • "
+                    f"Rooms: {row['Rooms Filled']} • Reg Pairs: {row['Reg Pairs']} • Obj: {row['Objective']} • % Filled: {row['Percent Filled']}  \n"
+                    f"Defaults → Reg d/t/m: {int(row['reg_max/day'])}/{int(row['reg_max_total'])}/{int(row['reg_min_total'])} • "
+                    f"Adcom d/t/m: {int(row['adcom_max/day'])}/{int(row['adcom_max_total'])}/{int(row['adcom_min_total'])}"
                 )
+            with cols[1]:
                 if st.button("Run", key=f"run_scn_{scn_id}"):
                     wb = io.BytesIO(file_bytes) if file_bytes is not None else up
                     try:
@@ -679,7 +637,6 @@ if run_autoscan:
                                 "senior_min_total": int(row["adcom_min_total"]),
                             }
                         )
-                        _sanity_check_slot_durations(inputs_run, expected_minutes=int(slot_minutes))
                         nexts_run = build_adjacency(inputs_run.slots, grace_min=cfg.adjacency_grace_min)
                         slots2_run = [
                             Slot(
@@ -687,36 +644,20 @@ if run_autoscan:
                                 adjacent_forward=frozenset(nexts_run.get(s.id, tuple()))
                             ) for s in inputs_run.slots
                         ]
-                        inputs_for_res = Inputs(
+                        inputs_run = Inp(
                             interviewers=inputs_run.interviewers,
                             slots=slots2_run,
-                            max_pairs_per_slot=inputs_run.max_pairs_per_slot,
+                            max_pairs_per_slot=inputs_run.max_pairs_per_slot
                         )
 
-                        # Use current sidebar Settings
-                        cfg_now = Settings(
-                            time_limit_s=float(time_limit),
-                            threads=cfg.threads,
-                            back_to_back_mode=cfg.back_to_back_mode,
-                            observer_extra_per_slot=cfg.observer_extra_per_slot,
-                            w_pairs=cfg.w_pairs,
-                            w_fill=cfg.w_fill,
-                            w_b2b=cfg.w_b2b,
-                            adjacency_grace_min=cfg.adjacency_grace_min,
-                            scarcity_bonus=cfg.scarcity_bonus,
-                            w_fill_adcom=cfg.w_fill_adcom,
-                            day_caps=getattr(cfg, "day_caps", None),
-                        )
-
-                        with st.spinner("Solving with CP-SAT…"):
-                            hint_run = greedy_seed(inputs_for_res)
-                            res_run = solve_weighted(inputs_for_res, cfg_now, hint=hint_run)
+                        with st.spinner(f"Running scheduler for scenario #{scn_id}…"):
+                            hint_run = greedy_seed(inputs_run)
+                            res_run = solve_weighted(inputs_run, cfg, hint=hint_run)
 
                         st.session_state["last_results"] = {"res": res_run, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         st.session_state["needs_rerun"] = False
-                        st.session_state["inputs_for_results"] = inputs_for_res
+                        st.session_state["inputs_for_results"] = inputs_run
 
-                        # Reflect chosen defaults to controls for convenience
                         st.session_state["reg_max_daily"] = int(row["reg_max/day"])
                         st.session_state["reg_max_total"] = int(row["reg_max_total"])
                         st.session_state["reg_min_total"] = int(row["reg_min_total"])
@@ -737,6 +678,7 @@ st.markdown("### 3) Solve")
 
 # Run button FIRST so we can clear stale state in the same render
 run_clicked = st.button("Run scheduler", type="primary")
+
 if run_clicked:
     with st.spinner("Solving with CP-SAT…"):
         hint = greedy_seed(inputs)
@@ -744,6 +686,11 @@ if run_clicked:
     st.session_state["last_results"] = {"res": res, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     st.session_state["needs_rerun"] = False
     st.session_state["inputs_for_results"] = inputs  # ensure results correspond to these inputs
+
+# Show stale banner only if still stale *after* handling the click
+show_stale = bool(st.session_state.get("needs_rerun") and st.session_state.get("last_results") and not run_clicked)
+if show_stale:
+    st.warning("Settings changed since the last run. Results below are stale — click **Run scheduler** to refresh.")
 
 # Decide what to display: current (just run) or last results
 current_res = (st.session_state.get("last_results") or {}).get("res")
@@ -758,59 +705,68 @@ pairs = res.get("pairs", {})                 # Regular pairs per Date_Time
 adcom_singles = res.get("adcom_singles")     # Adcom singles per Date_Time (may be None on older solver builds)
 b2b = res.get("b2b", {})  # may be unused depending on solver version
 
-# Use the inputs that correspond to the current results (persisted at run time)
-inputs_view = st.session_state.get("inputs_for_results", inputs_view)
+# Use the inputs that correspond to the current results (scenario-run or normal)
+inputs_view = st.session_state.get("inputs_for_results", inputs)
 
+st.subheader("Results")
+st.write(f"Status: **{res['status']}** | Objective: **{res['objective']:.0f}**")
+
+# === 🔽 PROMINENT EXCEL DOWNLOAD AT THE TOP ===
+excel_path = "schedule_report.xlsx"
+try:
+    out_path = make_excel_report(inputs_view, assign, path=excel_path)
+    with open(out_path, "rb") as fh:
+        excel_bytes = fh.read()
+    st.success("✅ Excel report is ready.")
+    st.download_button(
+        "⬇️ Download Excel Report (.xlsx)",
+        excel_bytes,
+        file_name="schedule_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"dl_xlsx_{st.session_state['last_results']['ts']}",
+    )
+except Exception as e:
+    st.error(f"Failed to prepare Excel report: {e}")
+
+# ----- Overview dashboard -----
 iv_by_id = {iv.id: iv for iv in inputs_view.interviewers}
 slot_ids = [s.id for s in inputs_view.slots]
 cap_map = inputs_view.max_pairs_per_slot
 
-# If not OPTIMAL, zero out derived metrics to avoid bogus counts
-if res.get("status") != "OPTIMAL":
-    rooms_used_by_t = {t: 0 for t in slot_ids}
-    total_rooms_used = 0
-    total_capacity = int(sum(int(cap_map.get(t, 0)) for t in slot_ids))
-    pct_filled = 0.0 if total_capacity == 0 else 0.0
-else:
-
 # Rooms used per Date_Time (pairs + adcom singles)
-    rooms_used_by_t: dict[str, int] = {}
-    if adcom_singles is not None:
-        for t in slot_ids:
-            rooms_used_by_t[t] = int(pairs.get(t, 0)) + int(adcom_singles.get(t, 0))
-        # Clamp used rooms by slot capacity
-        for t in slot_ids:
-            rooms_used_by_t[t] = max(0, min(int(rooms_used_by_t[t]), int(cap_map.get(t, 0))))
-    else:
-        # Fallback: compute from raw assignments; filter to valid ids/slots
-        valid_ids = set(iv_by_id.keys())
-        valid_slots = set(slot_ids)
-        reg_people_by_t = {t: 0 for t in slot_ids}
-        adcom_people_by_t = {t: 0 for t in slot_ids}
-        for (i, t), v in assign.items():
-            if not v or (i not in valid_ids) or (t not in valid_slots):
-                continue
-            if iv_by_id[i].kind == "Regular":
-                reg_people_by_t[t] += 1
-            elif iv_by_id[i].kind == "Senior":
-                adcom_people_by_t[t] += 1
-        for t in slot_ids:
-            rooms_used_by_t[t] = (reg_people_by_t[t] // 2) + adcom_people_by_t[t]
-        # Clamp used rooms by slot capacity
-        for t in slot_ids:
-            rooms_used_by_t[t] = max(0, min(int(rooms_used_by_t[t]), int(cap_map.get(t, 0))))
+rooms_used_by_t: dict[str, int] = {}
+if adcom_singles is not None:
+    for t in slot_ids:
+        rooms_used_by_t[t] = int(pairs.get(t, 0)) + int(adcom_singles.get(t, 0))
+else:
+    # Fallback: compute from raw assignments; filter to valid ids/slots
+    valid_ids = set(iv_by_id.keys())
+    valid_slots = set(slot_ids)
+    reg_people_by_t = {t: 0 for t in slot_ids}
+    adcom_people_by_t = {t: 0 for t in slot_ids}
+    for (i, t), v in assign.items():
+        if not v:
+            continue
+        if (i not in valid_ids) or (t not in valid_slots):
+            continue
+        if iv_by_id[i].kind == "Regular":
+            reg_people_by_t[t] += 1
+        elif iv_by_id[i].kind == "Senior":
+            adcom_people_by_t[t] += 1
+    for t in slot_ids:
+        rooms_used_by_t[t] = (reg_people_by_t[t] // 2) + adcom_people_by_t[t]
 
-    total_rooms_used = int(sum(rooms_used_by_t.values()))
-    total_capacity = int(sum(int(cap_map.get(t, 0)) for t in slot_ids))
-    pct_filled = 0.0 if total_capacity == 0 else 100.0 * total_rooms_used / total_capacity
+total_rooms_used = int(sum(rooms_used_by_t.values()))
+total_capacity = int(sum(int(cap_map.get(t, 0)) for t in slot_ids))
+pct_filled = 0.0 if total_capacity == 0 else 100.0 * total_rooms_used / total_capacity
 
 # --- Regular vs Adcom dashboard breakdown ---
-if adcom_singles is not None and res.get("status") == "OPTIMAL":
+if adcom_singles is not None:
     reg_rooms_used = int(sum(pairs.get(t, 0) for t in slot_ids))
     adcom_rooms_used = int(sum(adcom_singles.get(t, 0) for t in slot_ids))
 else:
-    reg_rooms_used = int(sum(min(rooms_used_by_t.get(t, 0), int(cap_map.get(t, 0))) for t in slot_ids))
-    adcom_rooms_used = 0  # unknown split without explicit singles; treat as zero for display
+    reg_rooms_used = int(sum((reg_people_by_t.get(t, 0) // 2) for t in slot_ids))
+    adcom_rooms_used = int(sum(adcom_people_by_t.get(t, 0) for t in slot_ids))
 
 used_total = reg_rooms_used + adcom_rooms_used
 reg_share_used = 0.0 if used_total == 0 else 100.0 * reg_rooms_used / used_total
@@ -825,24 +781,120 @@ with c1:
               help="Rooms occupied by Regular pairs (2 people per room).")
     st.progress(min(max(reg_pct_capacity/100.0, 0.0), 1.0),
                 text=f"{reg_share_used:.1f}% of used • {reg_pct_capacity:.1f}% of capacity")
+
 with c2:
-    st.metric("Adcom (rooms)", f"{adcom_rooms_used}/{total_capacity}")
+    st.metric("Adcom (rooms)", f"{adcom_rooms_used}/{total_capacity}",
+              help="Rooms occupied by Adcom singles (1 person per room).")
     st.progress(min(max(adcom_pct_capacity/100.0, 0.0), 1.0),
                 text=f"{adcom_share_used:.1f}% of used • {adcom_pct_capacity:.1f}% of capacity")
 
-# ----- Export buttons -----
-try:
-    excel_path = f"/tmp/schedule_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    out_path = make_excel_report(inputs_view, assign, path=excel_path)
-    with open(out_path, "rb") as fh:
-        excel_bytes = fh.read()
-    st.success("✅ Excel report is ready.")
-    st.download_button(
-        "⬇️ Download Excel Report (.xlsx)",
-        excel_bytes,
-        file_name="schedule_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"dl_xlsx_{st.session_state['last_results']['ts']}",
-    )
-except Exception as e:
-    st.error(f"Failed to prepare Excel report: {e}")
+# Optional: summary table
+with st.expander("Regular vs Adcom summary"):
+    df_group = pd.DataFrame([
+        {"Group": "Regular", "Rooms Used": reg_rooms_used,
+         "Share of Used (%)": round(reg_share_used, 1),
+         "Pct of Capacity (%)": round(reg_pct_capacity, 1)},
+        {"Group": "Adcom", "Rooms Used": adcom_rooms_used,
+         "Share of Used (%)": round(adcom_share_used, 1),
+         "Pct of Capacity (%)": round(adcom_pct_capacity, 1)},
+    ])
+    st.dataframe(_arrow_safe_scan_df(df_group), use_container_width=True)
+
+# Persist run history with DEFAULT LIMITS snapshot
+if "run_history" not in st.session_state:
+    st.session_state.run_history = []
+
+if run_clicked:
+    ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.run_history.append({
+        "timestamp": ts_now,
+        "filled": total_rooms_used,
+        "capacity": total_capacity,
+        "pct": pct_filled,
+        # Store default limits used for this run
+        "defaults": {
+            "reg_max_daily": int(reg_max_daily),
+            "reg_max_total": int(reg_max_total),
+            "reg_min_total": int(reg_min_total),
+            "sen_max_daily": int(sen_max_daily),
+            "sen_max_total": int(sen_max_total),
+            "sen_min_total": int(sen_min_total),
+        }
+    })
+    st.session_state.run_history = st.session_state.run_history[-50:]  # keep last 50
+
+# Top-line metrics
+prev = st.session_state.run_history[-2] if len(st.session_state.run_history) >= 2 else None
+delta_filled = None if not prev else total_rooms_used - prev["filled"]
+delta_pct = None if not prev else pct_filled - prev["pct"]
+
+m1, m2, m3 = st.columns(3)
+with m1:
+    st.metric("Rooms filled", value=total_rooms_used,
+              delta=(None if delta_filled is None else f"{delta_filled:+d}"))
+with m2:
+    st.metric("Total rooms (capacity)", value=total_capacity)
+with m3:
+    st.metric("Percent filled", value=f"{pct_filled:.1f}%",
+              delta=(None if delta_pct is None else f"{delta_pct:+.1f}%"))
+
+# Current progress
+st.progress(min(max(pct_filled / 100.0, 0.0), 1.0))
+
+# ---------- Run history table (with Default limits) ----------
+if st.session_state.run_history:
+    rows = []
+    for idx, item in enumerate(st.session_state.run_history, start=1):
+        d = item.get("defaults", {})
+        rows.append({
+            "Run #": idx,
+            "Timestamp": item["timestamp"],
+            "Filled": item["filled"],
+            "Capacity": item["capacity"],
+            "Percent Filled": round(item["pct"], 1),
+            "Reg Max/Day": d.get("reg_max_daily"),
+            "Reg Max Total": d.get("reg_max_total"),
+            "Reg Min Total": d.get("reg_min_total"),
+            "Adcom Max/Day": d.get("sen_max_daily"),
+            "Adcom Max Total": d.get("sen_max_total"),
+            "Adcom Min Total": d.get("sen_min_total"),
+        })
+    df_hist = pd.DataFrame(rows)
+    # Sort newest first by Timestamp if possible
+    try:
+        df_hist["Timestamp_dt"] = pd.to_datetime(df_hist["Timestamp"])
+        df_hist = df_hist.sort_values("Timestamp_dt", ascending=False).drop(columns=["Timestamp_dt"])
+    except Exception:
+        df_hist = df_hist.sort_values("Run #", ascending=False)
+    st.markdown("#### Run history")
+    st.dataframe(_arrow_safe_scan_df(df_hist), use_container_width=True)
+
+with st.expander("Per Date_Time room usage"):
+    df_slots_summary = pd.DataFrame([
+        {"Date_Time": t, "Used_Rooms": rooms_used_by_t[t], "Capacity": int(cap_map.get(t, 0))}
+        for t in slot_ids
+    ])
+    st.dataframe(_arrow_safe_scan_df(df_slots_summary), use_container_width=True)
+
+# ----------------
+# Detailed tables
+# ----------------
+by_slot = collections.defaultdict(list)
+for (i, t), v in assign.items():
+    if v:
+        by_slot[t].append(i)
+slot_df = pd.DataFrame([
+    {"slot_id": t, "assigned": ", ".join(sorted(v)), "#people": len(v), "pairs": pairs.get(t, 0)}
+    for t, v in by_slot.items()
+]).sort_values(["slot_id"]) if by_slot else pd.DataFrame(columns=["slot_id","assigned","#people","pairs"])
+st.dataframe(_arrow_safe_scan_df(slot_df), use_container_width=True)
+
+by_i = collections.defaultdict(list)
+for (i, t), v in assign.items():
+    if v:
+        by_i[i].append(t)
+iv_df = pd.DataFrame([
+    {"interviewer": i, "count_model": len(ts), "slots": ", ".join(sorted(ts))}
+    for i, ts in by_i.items()
+]).sort_values(["interviewer"]) if by_i else pd.DataFrame(columns=["interviewer","count_model","slots"])
+st.dataframe(_arrow_safe_scan_df(iv_df), use_container_width=True)
