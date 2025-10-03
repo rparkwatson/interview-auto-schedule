@@ -509,7 +509,35 @@ if run_autoscan:
         rooms_filled, reg_pairs, capacity = _compute_rooms_metrics(inputs_i, res_i, assign_i)
         pct = None if not capacity else 100.0 * rooms_filled / capacity
         objective = float(res_i.get("objective", 0.0))
-        status = res_i.get("status", "UNKNOWN")
+        status = (res_i.get("status") or "UNKNOWN").upper()
+        is_solution = status in {"OPTIMAL", "FEASIBLE", "SAT", "INTEGER", "FEASIBLE/SOLUTION_FOUND"}
+
+        assign_i = res_i.get("assign", {})
+        rooms_filled, reg_pairs, capacity = _compute_rooms_metrics(inputs_i, res_i, assign_i)
+
+        # Only compute these if a solution exists
+        pct = 100.0 * rooms_filled / capacity if (is_solution and capacity) else None
+        objective = float(res_i.get("objective", 0.0)) if is_solution else None
+
+        # For unsolved rows, clear misleading counts
+        if not is_solution:
+            res_i["assign"] = {}
+            res_i["pairs"] = {}
+            res_i["adcom_singles"] = {}
+
+
+        row = {
+            "Scenario #": idx,
+            "Status": status,
+            "Rooms Filled": rooms_filled,
+            "Reg Pairs": reg_pairs,
+            "Capacity": capacity,
+            "Percent Filled": None if pct is None else round(pct, 1),
+            "Objective": (None if objective is None else round(objective, 0)),
+            "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
+            "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
+}
+
 
         row = {
             "Scenario #": idx,
