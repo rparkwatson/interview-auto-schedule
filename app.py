@@ -23,19 +23,52 @@ def _mark_dirty():
     st.session_state["needs_rerun"] = True
 
 def _on_upload_change():
-    """When a new file is uploaded, mark stale and clear last results."""
+    """When a new file is uploaded, mark stale and clear last results + slider defaults."""
     st.session_state["needs_rerun"] = True
     st.session_state.pop("last_results", None)
+    # Reset slider ranges so wide defaults reapply for the new workbook
+    for k in [
+        "reg_max_daily_range","reg_max_total_range","reg_min_total_range",
+        "sen_max_daily_range","sen_max_total_range","sen_min_total_range",
+    ]:
+        st.session_state.pop(k, None)
     # Optional: also clear run history on new upload
     # st.session_state.pop("run_history", None)
 
 def _build_range(lo: int, hi: int, step: int) -> list[int]:
     """Inclusive integer range with guards."""
-    lo = int(lo); hi = int(hi); step = int(step) if step else 1
-    step = max(1, step)
+    lo = int(lo); hi = int(hi); step = max(1, int(step))
     if hi < lo:
         lo, hi = hi, lo
     return list(range(lo, hi + 1, step))
+
+def _init_range_state(state_key: str, min_v: int, max_v: int, seed: int, width: int, step: int):
+    """
+    Initialize st.session_state[state_key] to a wider (lo, hi) range centered on seed.
+    - width is the full span, in the same units as the slider.
+    - snaps lo/hi to the step and clamps to [min_v, max_v].
+    Does nothing if the key already exists (i.e., user already interacted).
+    """
+    if state_key in st.session_state:
+        return
+    step = max(1, int(step))
+    seed = int(seed)
+    min_v, max_v = int(min_v), int(max_v)
+    width = max(step, int(width))
+    half = max(step, width // 2)
+
+    lo = max(min_v, seed - half)
+    hi = min(max_v, seed + half)
+
+    # snap to step grid
+    def _snap(x):
+        return min(max_v, max(min_v, ((x - min_v) // step) * step + min_v))
+    lo = _snap(lo)
+    hi = _snap(hi)
+    if lo > hi:
+        hi = min(max_v, lo + step)
+
+    st.session_state[state_key] = (lo, hi)
 
 def _compute_rooms_metrics(inputs_local, res_local, assign_local):
     """Returns (rooms_filled, regular_pairs, capacity). Works with new/old solver outputs."""
@@ -79,7 +112,7 @@ if "last_results" not in st.session_state:
 # Sidebar (collapsible groups)
 # ---------------------------
 with st.sidebar:
-    # 1) Assignment Limits (kept as a top-level expander)
+    # 1) Assignment Limits
     with st.expander("Assignment Limits", expanded=False):
         st.markdown("**Select Group Constraints**")
         reg_max_daily = st.number_input("Regular MAX per day", 0, 24, 2, key="reg_max_daily", on_change=_mark_dirty)
@@ -89,7 +122,7 @@ with st.sidebar:
         sen_max_total = st.number_input("Adcom MAX total", 0, 999, 5, key="sen_max_total", on_change=_mark_dirty)
         sen_min_total = st.number_input("Adcom MIN total", 0, 999, 0, key="sen_min_total", on_change=_mark_dirty)
 
-    # 2) Settings (now contains all sub-sections)
+    # 2) Settings
     with st.expander("Settings", expanded=False):
         st.markdown("**Solver runtime & adjacency**")
         time_limit = st.number_input("Time limit (s)", 10, 1800, 120, key="time_limit", on_change=_mark_dirty)
@@ -98,7 +131,6 @@ with st.sidebar:
         observer_extra = st.number_input("Observer extra per slot", 0, 10, 0, key="observer_extra", on_change=_mark_dirty)
         adjacency_grace = st.number_input("Adjacency grace (min)", 0, 30, 0, key="adjacency_grace", on_change=_mark_dirty)
 
-        # --- Sub-sections collapsed inside Settings ---
         with st.expander("Objective Weights", expanded=False):
             w_pairs = st.number_input("Weight: pairs", 1000, 5_000_000, 1_000_000, step=1000, key="w_pairs", on_change=_mark_dirty)
             w_fill = st.number_input("Weight: fill (Regulars)", 10, 100_000, 1000, step=10, key="w_fill", on_change=_mark_dirty)
@@ -116,89 +148,84 @@ with st.sidebar:
             year = st.number_input("Calendar year", 2000, 2100, 2025, key="year", on_change=_mark_dirty)
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty)
 
-# 3) Auto-scan Defaults (SLIDER-BASED)
-with st.expander("Auto-scan defaults (experimental)", expanded=False):
-    st.caption(
-        "Pick ranges (inclusive). The solver will try every combination and rank by "
-        "Filled rooms, Regular pairs, then Objective."
-    )
+    # 3) Auto-scan Defaults (SLIDER-BASED with Option A defaults)
+    with st.expander("Auto-scan defaults (experimental)", expanded=False):
+        st.caption(
+            "Pick ranges (inclusive). The solver will try every combination and rank by "
+            "Filled rooms, Regular pairs, then Objective."
+        )
 
-    # One step control for all sliders (quantization)
-    granularity = st.number_input("Granularity (step)", 1, 50, 1, key="scan_step")
+        # One step control for all sliders (quantization)
+        granularity = st.number_input("Granularity (step)", 1, 50, 1, key="scan_step")
 
-    st.markdown("**Regulars**")
-    reg_max_daily_min, reg_max_daily_max = st.slider(
-        "Regular max/day",
-        min_value=0, max_value=24,
-        value=(int(reg_max_daily), int(reg_max_daily)),
-        step=int(granularity),
-        key="reg_max_daily_range",
-        help="Drag the handles to set the inclusive min/max."
-    )
-    reg_max_total_min, reg_max_total_max = st.slider(
-        "Regular max total",
-        min_value=0, max_value=999,
-        value=(int(reg_max_total), int(reg_max_total)),
-        step=int(granularity),
-        key="reg_max_total_range"
-    )
-    reg_min_total_min, reg_min_total_max = st.slider(
-        "Regular min total",
-        min_value=0, max_value=999,
-        value=(int(reg_min_total), int(reg_min_total)),
-        step=int(granularity),
-        key="reg_min_total_range"
-    )
+        # Option A: wider defaults ON FIRST RENDER (and after upload reset).
+        # Use ±3 for per-day, ±10 for totals/min totals (full width 6/20).
+        w_day = 6
+        w_total = 20
 
-    st.markdown("**Adcoms**")
-    sen_max_daily_min, sen_max_daily_max = st.slider(
-        "Adcom max/day",
-        min_value=0, max_value=24,
-        value=(int(sen_max_daily), int(sen_max_daily)),
-        step=int(granularity),
-        key="sen_max_daily_range"
-    )
-    sen_max_total_min, sen_max_total_max = st.slider(
-        "Adcom max total",
-        min_value=0, max_value=999,
-        value=(int(sen_max_total), int(sen_max_total)),
-        step=int(granularity),
-        key="sen_max_total_range"
-    )
-    sen_min_total_min, sen_min_total_max = st.slider(
-        "Adcom min total",
-        min_value=0, max_value=999,
-        value=(int(sen_min_total), int(sen_min_total)),
-        step=int(granularity),
-        key="sen_min_total_range"
-    )
+        # Initialize defaults once (no-op if keys already set)
+        _init_range_state("reg_max_daily_range", 0, 24, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 999, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 999, int(reg_min_total), width=w_total, step=int(granularity))
 
-    # Mirror the old per-field step vars so the rest of your code continues to work:
-    reg_max_daily_step = reg_max_total_step = reg_min_total_step = int(granularity)
-    sen_max_daily_step = sen_max_total_step = sen_min_total_step = int(granularity)
+        _init_range_state("sen_max_daily_range", 0, 24, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 999, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 999, int(sen_min_total), width=w_total, step=int(granularity))
 
-    # Per-scenario config (unchanged)
-    scan_time_limit = st.number_input(
-        "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
-        key="scan_time_limit"
-    )
-    max_scenarios_warn = st.number_input(
-        "Warn if scenarios exceed", 1, 500, 100, key="max_scenarios_warn"
-    )
+        # Render sliders (values come from session_state, and will persist)
+        st.markdown("**Regulars**")
+        reg_max_daily_min, reg_max_daily_max = st.slider(
+            "Regular max/day", 0, 24, st.session_state["reg_max_daily_range"],
+            step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
+        )
+        reg_max_total_min, reg_max_total_max = st.slider(
+            "Regular max total", 0, 999, st.session_state["reg_max_total_range"],
+            step=int(granularity), key="reg_max_total_range"
+        )
+        reg_min_total_min, reg_min_total_max = st.slider(
+            "Regular min total", 0, 999, st.session_state["reg_min_total_range"],
+            step=int(granularity), key="reg_min_total_range"
+        )
 
-    # Scenario count estimate
-    _est = (
-        len(_build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)) *
-        len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
-        len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
-        len(_build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)) *
-        len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
-        len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
-    )
-    st.caption(f"Estimated scenarios: **{_est:,}**")
+        st.markdown("**Adcoms**")
+        sen_max_daily_min, sen_max_daily_max = st.slider(
+            "Adcom max/day", 0, 24, st.session_state["sen_max_daily_range"],
+            step=int(granularity), key="sen_max_daily_range"
+        )
+        sen_max_total_min, sen_max_total_max = st.slider(
+            "Adcom max total", 0, 999, st.session_state["sen_max_total_range"],
+            step=int(granularity), key="sen_max_total_range"
+        )
+        sen_min_total_min, sen_min_total_max = st.slider(
+            "Adcom min total", 0, 999, st.session_state["sen_min_total_range"],
+            step=int(granularity), key="sen_min_total_range"
+        )
 
-    run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
+        # Mirror per-field step vars so the rest of the code uses them
+        reg_max_daily_step = reg_max_total_step = reg_min_total_step = int(granularity)
+        sen_max_daily_step = sen_max_total_step = sen_min_total_step = int(granularity)
 
+        # Per-scenario config
+        scan_time_limit = st.number_input(
+            "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
+            key="scan_time_limit"
+        )
+        max_scenarios_warn = st.number_input(
+            "Warn if scenarios exceed", 1, 500, 100, key="max_scenarios_warn"
+        )
+
+        # Scenario count estimate
+        _est = (
+            len(_build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)) *
+            len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
+            len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
+            len(_build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)) *
+            len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
+            len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
+        )
+        st.caption(f"Estimated scenarios: **{_est:,}**")
+
+        run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
 # Build Settings from sidebar values
 cfg = Settings(
