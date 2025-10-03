@@ -386,7 +386,7 @@ with c3:
     st.metric("Slots with capacity", sum(1 for v in inputs.max_pairs_per_slot.values() if v > 0))
 
 # --- Tabs inside a single expander ---
-with st.expander("Data tables", expanded=False):
+with st.expander("Summary Tables", expanded=False):
     tab_people, tab_slots = st.tabs(["People", "Slots"])
 
     with tab_people:
@@ -899,7 +899,7 @@ if st.session_state.run_history:
             "Adcom Min Total": d.get("sen_min_total"),
         })
     df_hist = pd.DataFrame(rows)
-    # Sort newest first by Timestamp if possible
+    # Sort newest first by Timestamp
     try:
         df_hist["Timestamp_dt"] = pd.to_datetime(df_hist["Timestamp"])
         df_hist = df_hist.sort_values("Timestamp_dt", ascending=False).drop(columns=["Timestamp_dt"])
@@ -913,7 +913,46 @@ with st.expander("Per Date_Time room usage"):
         {"Date_Time": t, "Used_Rooms": rooms_used_by_t[t], "Capacity": int(cap_map.get(t, 0))}
         for t in slot_ids
     ])
-    st.dataframe(_arrow_safe_scan_df(df_slots_summary), width='stretch')
+
+    # Add unused rooms (never negative) and optional percent
+    df_slots_summary["Unused_Rooms"] = (df_slots_summary["Capacity"] - df_slots_summary["Used_Rooms"]).clip(lower=0)
+    df_slots_summary["Unused_%"] = np.where(
+        df_slots_summary["Capacity"] > 0,
+        100.0 * df_slots_summary["Unused_Rooms"] / df_slots_summary["Capacity"],
+        np.nan
+    )
+
+    # Controls
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        only_unused = st.checkbox("Show only non-full slots", value=False)
+    with col2:
+        st.caption("Rows with unused rooms are highlighted and sorted to the top.")
+
+    # Filter (optional)
+    view = df_slots_summary.copy()
+    if only_unused:
+        view = view[view["Unused_Rooms"] > 0]
+
+    # Sort: unused first, then Date_Time
+    view = view.sort_values(["Unused_Rooms", "Date_Time"], ascending=[False, True]).reset_index(drop=True)
+
+    # Clean types for Arrow, then style
+    safe = _arrow_safe_scan_df(view, max_rows=None)
+
+    def _hl_unused(row):
+        # soft amber background for rows with any unused rooms
+        if row.get("Unused_Rooms", 0) > 0:
+            return ["background-color: rgba(255, 193, 7, 0.25)"] * len(row)
+        return [""] * len(row)
+
+    styled = (
+        safe.style
+            .apply(_hl_unused, axis=1)
+            .format({"Unused_%": "{:.1f}%"})
+    )
+
+    st.dataframe(styled, width='stretch')
 
 # ----------------
 # Detailed tables
