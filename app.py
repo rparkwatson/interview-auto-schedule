@@ -116,76 +116,89 @@ with st.sidebar:
             year = st.number_input("Calendar year", 2000, 2100, 2025, key="year", on_change=_mark_dirty)
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty)
 
-    # 3) Auto-scan Defaults (RANGE-BASED)
-    with st.expander("Auto-scan defaults (experimental)", expanded=False):
-        st.caption("Pick ranges (inclusive). The solver will try every combination and rank by Filled rooms, Regular pairs, then Objective.")
+# 3) Auto-scan Defaults (SLIDER-BASED)
+with st.expander("Auto-scan defaults (experimental)", expanded=False):
+    st.caption(
+        "Pick ranges (inclusive). The solver will try every combination and rank by "
+        "Filled rooms, Regular pairs, then Objective."
+    )
 
-        # Regulars
-        col_r1, col_r2, col_r3 = st.columns(3)
-        with col_r1:
-            reg_max_daily_min = st.number_input("Regular max/day — MIN", 0, 24, int(reg_max_daily), key="reg_max_daily_min")
-        with col_r2:
-            reg_max_daily_max = st.number_input("Regular max/day — MAX", 0, 24, int(reg_max_daily), key="reg_max_daily_max")
-        with col_r3:
-            reg_max_daily_step = st.number_input("Regular max/day — STEP", 1, 24, 1, key="reg_max_daily_step")
+    # One step control for all sliders (quantization)
+    granularity = st.number_input("Granularity (step)", 1, 50, 1, key="scan_step")
 
-        col_r4, col_r5, col_r6 = st.columns(3)
-        with col_r4:
-            reg_max_total_min = st.number_input("Regular max total — MIN", 0, 999, int(reg_max_total), key="reg_max_total_min")
-        with col_r5:
-            reg_max_total_max = st.number_input("Regular max total — MAX", 0, 999, int(reg_max_total), key="reg_max_total_max")
-        with col_r6:
-            reg_max_total_step = st.number_input("Regular max total — STEP", 1, 999, 1, key="reg_max_total_step")
+    st.markdown("**Regulars**")
+    reg_max_daily_min, reg_max_daily_max = st.slider(
+        "Regular max/day",
+        min_value=0, max_value=24,
+        value=(int(reg_max_daily), int(reg_max_daily)),
+        step=int(granularity),
+        key="reg_max_daily_range",
+        help="Drag the handles to set the inclusive min/max."
+    )
+    reg_max_total_min, reg_max_total_max = st.slider(
+        "Regular max total",
+        min_value=0, max_value=999,
+        value=(int(reg_max_total), int(reg_max_total)),
+        step=int(granularity),
+        key="reg_max_total_range"
+    )
+    reg_min_total_min, reg_min_total_max = st.slider(
+        "Regular min total",
+        min_value=0, max_value=999,
+        value=(int(reg_min_total), int(reg_min_total)),
+        step=int(granularity),
+        key="reg_min_total_range"
+    )
 
-        col_r7, col_r8, col_r9 = st.columns(3)
-        with col_r7:
-            reg_min_total_min = st.number_input("Regular min total — MIN", 0, 999, int(reg_min_total), key="reg_min_total_min")
-        with col_r8:
-            reg_min_total_max = st.number_input("Regular min total — MAX", 0, 999, int(reg_min_total), key="reg_min_total_max")
-        with col_r9:
-            reg_min_total_step = st.number_input("Regular min total — STEP", 1, 999, 1, key="reg_min_total_step")
+    st.markdown("**Adcoms**")
+    sen_max_daily_min, sen_max_daily_max = st.slider(
+        "Adcom max/day",
+        min_value=0, max_value=24,
+        value=(int(sen_max_daily), int(sen_max_daily)),
+        step=int(granularity),
+        key="sen_max_daily_range"
+    )
+    sen_max_total_min, sen_max_total_max = st.slider(
+        "Adcom max total",
+        min_value=0, max_value=999,
+        value=(int(sen_max_total), int(sen_max_total)),
+        step=int(granularity),
+        key="sen_max_total_range"
+    )
+    sen_min_total_min, sen_min_total_max = st.slider(
+        "Adcom min total",
+        min_value=0, max_value=999,
+        value=(int(sen_min_total), int(sen_min_total)),
+        step=int(granularity),
+        key="sen_min_total_range"
+    )
 
-        # Adcoms
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            sen_max_daily_min = st.number_input("Adcom max/day — MIN", 0, 24, int(sen_max_daily), key="sen_max_daily_min")
-        with col_s2:
-            sen_max_daily_max = st.number_input("Adcom max/day — MAX", 0, 24, int(sen_max_daily), key="sen_max_daily_max")
-        with col_s3:
-            sen_max_daily_step = st.number_input("Adcom max/day — STEP", 1, 24, 1, key="sen_max_daily_step")
+    # Mirror the old per-field step vars so the rest of your code continues to work:
+    reg_max_daily_step = reg_max_total_step = reg_min_total_step = int(granularity)
+    sen_max_daily_step = sen_max_total_step = sen_min_total_step = int(granularity)
 
-        col_s4, col_s5, col_s6 = st.columns(3)
-        with col_s4:
-            sen_max_total_min = st.number_input("Adcom max total — MIN", 0, 999, int(sen_max_total), key="sen_max_total_min")
-        with col_s5:
-            sen_max_total_max = st.number_input("Adcom max total — MAX", 0, 999, int(sen_max_total), key="sen_max_total_max")
-        with col_s6:
-            sen_max_total_step = st.number_input("Adcom max total — STEP", 1, 999, 1, key="sen_max_total_step")
+    # Per-scenario config (unchanged)
+    scan_time_limit = st.number_input(
+        "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
+        key="scan_time_limit"
+    )
+    max_scenarios_warn = st.number_input(
+        "Warn if scenarios exceed", 1, 500, 100, key="max_scenarios_warn"
+    )
 
-        col_s7, col_s8, col_s9 = st.columns(3)
-        with col_s7:
-            sen_min_total_min = st.number_input("Adcom min total — MIN", 0, 999, int(sen_min_total), key="sen_min_total_min")
-        with col_s8:
-            sen_min_total_max = st.number_input("Adcom min total — MAX", 0, 999, int(sen_min_total), key="sen_min_total_max")
-        with col_s9:
-            sen_min_total_step = st.number_input("Adcom min total — STEP", 1, 999, 1, key="sen_min_total_step")
+    # Scenario count estimate
+    _est = (
+        len(_build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)) *
+        len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
+        len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
+        len(_build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)) *
+        len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
+        len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
+    )
+    st.caption(f"Estimated scenarios: **{_est:,}**")
 
-        # Per-scenario config
-        scan_time_limit = st.number_input("Time limit per scenario (s)", 5, 900, min(60, int(time_limit)), key="scan_time_limit")
-        max_scenarios_warn = st.number_input("Warn if scenarios exceed", 1, 500, 100, key="max_scenarios_warn")
+    run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
-        # Scenario count estimate
-        _est = (
-            len(_build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)) *
-            len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
-            len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
-            len(_build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)) *
-            len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
-            len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
-        )
-        st.caption(f"Estimated scenarios: **{_est:,}**")
-
-        run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
 # Build Settings from sidebar values
 cfg = Settings(
