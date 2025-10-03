@@ -224,8 +224,8 @@ with st.sidebar:
 
         # Wider defaults ON FIRST RENDER (and after upload reset).
         # Use ±3 for per-day, ±10 for totals/min totals (full width 6/20).
-        w_day = 6
-        w_total = 20
+        w_day = 3
+        w_total = 10
 
         # Initialize defaults once (no-op if keys already set)
         _init_range_state("reg_max_daily_range", 0, 10, int(reg_max_daily), width=w_day,  step=int(granularity))
@@ -334,10 +334,10 @@ except Exception as e:
     st.stop()
 
 if not use_legacy:
-    st.error("Workbook doesn't match the legacy format. Please provide the original workbook.")
+    st.error("Workbook doesn't match the format.")
     st.stop()
 
-st.success("Detected legacy workbook format ✔️")
+st.success("Detected correct workbook format ✔️")
 
 # Parse legacy with the limits from the top expander
 try:
@@ -385,22 +385,45 @@ with c2:
 with c3:
     st.metric("Slots with capacity", sum(1 for v in inputs.max_pairs_per_slot.values() if v > 0))
 
-with st.expander("People"):
-    df_people = pd.DataFrame([{
-        "id": iv.id, "name": iv.name, "kind": iv.kind,
-        "pre_assigned": iv.pre_assigned,
-        "min_total": iv.min_total, "max_daily": iv.max_daily, "max_total": iv.max_total,
-        "avail_count": len(iv.available_slots)
-    } for iv in inputs.interviewers])
-    st.dataframe(_arrow_safe_scan_df(df_people), width='stretch')
+# --- Tabs inside a single expander ---
+with st.expander("Data tables", expanded=False):
+    tab_people, tab_slots = st.tabs(["People", "Slots"])
 
-with st.expander("Slots"):
-    df_slots = pd.DataFrame([{
-        "slot_id": s.id, "start": s.start, "end": s.end,
-        "day": s.day_key, "cap_pairs": inputs.max_pairs_per_slot.get(s.id, 0),
-        "adjacent": list(s.adjacent_forward)
-    } for s in inputs.slots])
-    st.dataframe(_arrow_safe_scan_df(df_slots), width='stretch')
+    with tab_people:
+        df_people = pd.DataFrame([{
+            "id": iv.id, "name": iv.name, "kind": iv.kind,
+            "pre_assigned": iv.pre_assigned,
+            "min_total": iv.min_total, "max_daily": iv.max_daily, "max_total": iv.max_total,
+            "avail_count": len(iv.available_slots)
+        } for iv in inputs.interviewers])
+        st.dataframe(_arrow_safe_scan_df(df_people), width='stretch')
+        st.download_button(
+            "⬇️ Download people (CSV)",
+            df_people.to_csv(index=False).encode("utf-8"),
+            file_name="people.csv",
+            mime="text/csv",
+            key="dl_people_csv",
+        )
+
+    with tab_slots:
+        df_slots = pd.DataFrame([{
+            "slot_id": s.id, "start": s.start, "end": s.end,
+            "day": s.day_key, "cap_pairs": inputs.max_pairs_per_slot.get(s.id, 0),
+            "adjacent": list(s.adjacent_forward)
+        } for s in inputs.slots])
+
+        # small UI to hide zero-capacity slots
+        hide_zero = st.checkbox("Hide zero-capacity slots", value=True)
+        view = df_slots[df_slots["cap_pairs"].fillna(0) > 0] if hide_zero else df_slots
+
+        st.dataframe(_arrow_safe_scan_df(view), width='stretch')
+        st.download_button(
+            "⬇️ Download slots (CSV)",
+            view.to_csv(index=False).encode("utf-8"),
+            file_name="slots.csv",
+            mime="text/csv",
+            key="dl_slots_csv",
+        )
 
 # =========================
 #  Auto-scan (grid search)
