@@ -533,33 +533,21 @@ if run_autoscan:
             "Reg Pairs": reg_pairs,
             "Capacity": capacity,
             "Percent Filled": None if pct is None else round(pct, 1),
-            "Objective": (None if objective is None else round(objective, 0)),
+            "Objective": (None if objective is None or not np.isfinite(objective) else round(float(objective), 0)),
             "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
             "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
 }
-
-
-        row = {
-            "Scenario #": idx,
-            "Status": status,
-            "Rooms Filled": rooms_filled,
-            "Reg Pairs": reg_pairs,
-            "Capacity": capacity,
-            "Percent Filled": None if pct is None else round(pct, 1),
-            "Objective": round(objective, 0),
-            "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
-            "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
-        }
         results_rows.append(row)
 
         # Track best (lexicographic: Percent Filled, reg_pairs, objective)
-        key = (
-            (pct if pct is not None else -1.0),
-            (reg_pairs or -1),
-            (objective or -1),
-        )
-        if (best is None) or (key > best[0]):
-            best = (key, idx, row)
+        if is_solution:
+            key = (
+                (pct if pct is not None else -1.0),
+                (reg_pairs if reg_pairs is not None else -1),
+                (objective if objective is not None else -1),
+            )
+            if (best is None) or (key > best[0]):
+                best = (key, idx, row)
 
         prog.progress(idx/len(grid))
 
