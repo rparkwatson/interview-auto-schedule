@@ -1,0 +1,7 @@
+streamlit>=1.36
+pydantic>=2.7
+pandas>=2.1
+numpy>=1.26
+python-dateutil>=2.9
+ortools>=9.9
+openpyxl>=3.1
