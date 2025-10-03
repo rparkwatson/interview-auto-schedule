@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import collections
 import pandas as pd
+import numpy as np
 import streamlit as st
 import io
 import itertools
@@ -16,7 +17,7 @@ from scheduler.solvers.cpsat import solve_weighted
 from scheduler.domain import Slot, Inputs as Inp
 
 # ---------------------------
-# Utilities to track changes
+# Utilities
 # ---------------------------
 def _mark_dirty():
     """Mark results as stale due to a setting change."""
@@ -98,6 +99,43 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
     capacity = int(sum(int(cap_map_local.get(t, 0)) for t in slot_ids_local))
     return rooms_filled, reg_pairs, capacity
 
+def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
+    """
+    Prepare the auto-scan DataFrame for st.dataframe() to avoid Arrow overflows.
+    - Coerces numeric columns
+    - Replaces ±inf with NaN
+    - Optionally limits to top `max_rows`
+    - Truncates long Status cells
+    """
+    if df is None or df.empty:
+        return df
+
+    safe = df.copy()
+
+    if max_rows is not None and len(safe) > max_rows:
+        safe = safe.head(max_rows)
+
+    INT_COLS = [
+        "Scenario #", "Rooms Filled", "Reg Pairs", "Capacity",
+        "reg_max/day", "reg_max_total", "reg_min_total",
+        "adcom_max/day", "adcom_max_total", "adcom_min_total",
+    ]
+    FLOAT_COLS = ["Percent Filled", "Objective"]
+
+    for c in INT_COLS:
+        if c in safe.columns:
+            safe[c] = pd.to_numeric(safe[c], errors="coerce").astype("Int64")
+
+    for c in FLOAT_COLS:
+        if c in safe.columns:
+            safe[c] = pd.to_numeric(safe[c], errors="coerce")
+            safe[c].replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    if "Status" in safe.columns:
+        safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
+
+    return safe
+
 # ---------------------------
 # App init
 # ---------------------------
@@ -148,7 +186,7 @@ with st.sidebar:
             year = st.number_input("Calendar year", 2000, 2100, 2025, key="year", on_change=_mark_dirty)
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty)
 
-    # 3) Auto-scan Defaults
+    # 3) Auto-scan Defaults (SLIDER-BASED with wider first-run defaults)
     with st.expander("Auto-scan defaults (experimental)", expanded=False):
         st.caption(
             "Pick ranges (inclusive). The solver will try every combination and rank by "
@@ -158,46 +196,46 @@ with st.sidebar:
         # One step control for all sliders (quantization)
         granularity = st.number_input("Granularity (step)", 1, 50, 1, key="scan_step")
 
-        # Option A: wider defaults ON FIRST RENDER (and after upload reset).
+        # Wider defaults ON FIRST RENDER (and after upload reset).
         # Use ±3 for per-day, ±10 for totals/min totals (full width 6/20).
         w_day = 3
         w_total = 10
 
         # Initialize defaults once (no-op if keys already set)
-        _init_range_state("reg_max_daily_range", 0, 6, int(reg_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("reg_max_total_range", 0, 20, int(reg_max_total), width=w_total, step=int(granularity))
-        _init_range_state("reg_min_total_range", 0, 20, int(reg_min_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_daily_range", 0, 8, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 15, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 10, int(reg_min_total), width=w_total, step=int(granularity))
 
-        _init_range_state("sen_max_daily_range", 0, 6, int(sen_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 20, int(sen_max_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_min_total_range", 0, 20, int(sen_min_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_daily_range", 0, 8, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 15, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 10, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
         st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "Regular max/day", 0, 6, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 8, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "Regular max total", 0, 20, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 15, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
-            "Regular min total", 0, 20, st.session_state["reg_min_total_range"],
+            "Regular min total", 0, 10, st.session_state["reg_min_total_range"],
             step=int(granularity), key="reg_min_total_range"
         )
 
         st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
-            "Adcom max/day", 0, 6, st.session_state["sen_max_daily_range"],
+            "Adcom max/day", 0, 8, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
         )
         sen_max_total_min, sen_max_total_max = st.slider(
-            "Adcom max total", 0, 20, st.session_state["sen_max_total_range"],
+            "Adcom max total", 0, 15, st.session_state["sen_max_total_range"],
             step=int(granularity), key="sen_max_total_range"
         )
         sen_min_total_min, sen_min_total_max = st.slider(
-            "Adcom min total", 0, 20, st.session_state["sen_min_total_range"],
+            "Adcom min total", 0, 10, st.session_state["sen_min_total_range"],
             step=int(granularity), key="sen_min_total_range"
         )
 
@@ -365,7 +403,7 @@ if run_autoscan:
         file_bytes = None
 
     results_rows = []
-    best = None  # (rooms_filled, reg_pairs, objective), scenario index, row dict
+    best = None  # ((pct_filled, reg_pairs, objective), scenario index, row dict)
 
     prog = st.progress(0.0)
     for idx, (r_md, r_mt, r_mn, s_md, s_mt, s_mn) in enumerate(grid, start=1):
@@ -458,60 +496,82 @@ if run_autoscan:
         }
         results_rows.append(row)
 
-        # Track best (lexicographic: rooms, reg_pairs, objective)
-        key = (rooms_filled or -1, reg_pairs or -1, objective or -1)
+        # Track best (lexicographic: Percent Filled, reg_pairs, objective)
+        key = (
+            (pct if pct is not None else -1.0),
+            (reg_pairs or -1),
+            (objective or -1),
+        )
         if (best is None) or (key > best[0]):
             best = (key, idx, row)
 
         prog.progress(idx/len(grid))
 
-    # Show results table (best first)
+    # Show results table (TOP 50 by % filled, then reg pairs, then objective)
     if results_rows:
         df_scan = pd.DataFrame(results_rows)
 
-        def _sort_key_df(row):
-            return (
-                -1 if row["Rooms Filled"] is None else -row["Rooms Filled"],
-                -1 if row["Reg Pairs"] is None else -row["Reg Pairs"],
-                -1 if row["Objective"] is None else -row["Objective"],
-            )
+        # Coerce numeric columns for robust sorting
+        df_scan["Percent Filled"] = pd.to_numeric(df_scan["Percent Filled"], errors="coerce")
+        df_scan["Reg Pairs"] = pd.to_numeric(df_scan["Reg Pairs"], errors="coerce")
+        df_scan["Objective"] = pd.to_numeric(df_scan["Objective"], errors="coerce")
 
-        df_scan["_k1"] = df_scan.apply(_sort_key_df, axis=1)
-        df_scan = df_scan.sort_values("_k1").drop(columns=["_k1"])
-        st.markdown("### Auto-scan results")
-        st.dataframe(df_scan, use_container_width=True)
+        df_scan_sorted = df_scan.sort_values(
+            by=["Percent Filled", "Reg Pairs", "Objective"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+
+        TOP_N = 50
+        df_scan_top = df_scan_sorted.head(TOP_N)
+
+        st.markdown(f"### Auto-scan results — Top {min(TOP_N, len(df_scan_sorted))} of {len(df_scan_sorted)} by % filled")
+
+        # Clean a copy for display (avoid Arrow overflow). Top 50 is small; no row cap needed.
+        df_scan_view = _arrow_safe_scan_df(df_scan_top, max_rows=None)
+        st.dataframe(df_scan_view, use_container_width=True)
+
+        # CSV download of ALL scenarios
+        csv_bytes = df_scan_sorted.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download all auto-scan results (CSV)",
+            csv_bytes,
+            file_name="autoscan_results.csv",
+            mime="text/csv",
+            key="dl_autoscan_csv",
+        )
 
         if best is not None:
+            best_row = best[2]
             st.success(
-                f"Best scenario → Rooms Filled: {best[2]['Rooms Filled']} | "
-                f"Reg Pairs: {best[2]['Reg Pairs']} | Objective: {best[2]['Objective']}"
+                f"Best scenario → % Filled: {best_row['Percent Filled']} | "
+                f"Reg Pairs: {best_row['Reg Pairs']} | Objective: {best_row['Objective']}"
             )
             # Button to apply the best defaults back into the sidebar
             if st.button("Apply best defaults to sidebar"):
-                st.session_state["reg_max_daily"] = int(best[2]["reg_max/day"])
-                st.session_state["reg_max_total"] = int(best[2]["reg_max_total"])
-                st.session_state["reg_min_total"] = int(best[2]["reg_min_total"])
-                st.session_state["sen_max_daily"] = int(best[2]["adcom_max/day"])
-                st.session_state["sen_max_total"] = int(best[2]["adcom_max_total"])
-                st.session_state["sen_min_total"] = int(best[2]["adcom_min_total"])
-                # Mark current results stale to prompt a re-run
+                st.session_state["reg_max_daily"] = int(best_row["reg_max/day"])
+                st.session_state["reg_max_total"] = int(best_row["reg_max_total"])
+                st.session_state["reg_min_total"] = int(best_row["reg_min_total"])
+                st.session_state["sen_max_daily"] = int(best_row["adcom_max/day"])
+                st.session_state["sen_max_total"] = int(best_row["adcom_max_total"])
+                st.session_state["sen_min_total"] = int(best_row["adcom_min_total"])
                 st.session_state["needs_rerun"] = True
                 st.info("Applied best defaults. Click **Run scheduler** to solve with these settings.")
 
-        # --- Run any scenario directly ---
-        st.markdown("#### Run any scenario from the list")
+        # --- Run any scenario directly (LIMITED TO TOP 50) ---
+        st.markdown("#### Run any of the top scenarios")
         try:
             file_bytes = up.getvalue()
         except Exception:
             file_bytes = None
 
-        for _, row in df_scan.iterrows():
+        for _, row in df_scan_top.iterrows():
             scn_id = int(row["Scenario #"])
             cols = st.columns([6, 1])
             with cols[0]:
                 st.write(
                     f"**Scenario #{scn_id}** — Status: {row['Status']} • "
-                    f"Rooms: {row['Rooms Filled']} • Reg Pairs: {row['Reg Pairs']} • Obj: {row['Objective']}  \n"
+                    f"Rooms: {row['Rooms Filled']} • Reg Pairs: {row['Reg Pairs']} • Obj: {row['Objective']} • % Filled: {row['Percent Filled']}  \n"
                     f"Defaults → Reg d/t/m: {int(row['reg_max/day'])}/{int(row['reg_max_total'])}/{int(row['reg_min_total'])} • "
                     f"Adcom d/t/m: {int(row['adcom_max/day'])}/{int(row['adcom_max_total'])}/{int(row['adcom_min_total'])}"
                 )
