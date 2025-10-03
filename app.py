@@ -101,8 +101,9 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
 
 def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
     """
-    Prepare the auto-scan DataFrame for st.dataframe() to avoid Arrow overflows.
+    Prepare the auto-scan DataFrame for st.dataframe() to avoid Arrow overflows and casting errors.
     - Coerces numeric columns
+    - Uses Int64 only when values are integer-like; otherwise keeps float64
     - Replaces ±inf with NaN
     - Optionally limits to top `max_rows`
     - Truncates long Status cells
@@ -115,21 +116,36 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
     if max_rows is not None and len(safe) > max_rows:
         safe = safe.head(max_rows)
 
-    INT_COLS = [
+    INT_CANDIDATES = [
         "Scenario #", "Rooms Filled", "Reg Pairs", "Capacity",
         "reg_max/day", "reg_max_total", "reg_min_total",
         "adcom_max/day", "adcom_max_total", "adcom_min_total",
     ]
     FLOAT_COLS = ["Percent Filled", "Objective"]
 
-    for c in INT_COLS:
-        if c in safe.columns:
-            safe[c] = pd.to_numeric(safe[c], errors="coerce").astype("Int64")
-
+    # Normalize floats
     for c in FLOAT_COLS:
         if c in safe.columns:
-            safe[c] = pd.to_numeric(safe[c], errors="coerce")
-            safe[c].replace([np.inf, -np.inf], np.nan, inplace=True)
+            s = pd.to_numeric(safe[c], errors="coerce")
+            s = s.replace([np.inf, -np.inf], np.nan)
+            safe[c] = s
+
+    # Helper: all non-null values are whole numbers?
+    def _int_like(series: pd.Series) -> bool:
+        vals = pd.to_numeric(series, errors="coerce")
+        vals = vals[vals.notna()]
+        if vals.empty:
+            return True
+        return np.all(np.isfinite(vals) & (np.floor(vals) == vals))
+
+    # Integer candidates: only cast to Int64 when safe; otherwise keep as float
+    for c in INT_CANDIDATES:
+        if c in safe.columns:
+            vals = pd.to_numeric(safe[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            if _int_like(vals):
+                safe[c] = vals.round(0).astype("Int64")
+            else:
+                safe[c] = vals  # remains float64 with NaN allowed
 
     if "Status" in safe.columns:
         safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
@@ -198,26 +214,26 @@ with st.sidebar:
 
         # Wider defaults ON FIRST RENDER (and after upload reset).
         # Use ±3 for per-day, ±10 for totals/min totals (full width 6/20).
-        w_day = 3
-        w_total = 10
+        w_day = 6
+        w_total = 20
 
         # Initialize defaults once (no-op if keys already set)
-        _init_range_state("reg_max_daily_range", 0, 8, int(reg_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("reg_max_total_range", 0, 15, int(reg_max_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_daily_range", 0, 10, int(reg_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 10, int(reg_max_total), width=w_total, step=int(granularity))
         _init_range_state("reg_min_total_range", 0, 10, int(reg_min_total), width=w_total, step=int(granularity))
 
-        _init_range_state("sen_max_daily_range", 0, 8, int(sen_max_daily), width=w_day,  step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 15, int(sen_max_total), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_daily_range", 0, 10, int(sen_max_daily), width=w_day,  step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 10, int(sen_max_total), width=w_total, step=int(granularity))
         _init_range_state("sen_min_total_range", 0, 10, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
         st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "Regular max/day", 0, 8, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 10, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "Regular max total", 0, 15, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 10, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
@@ -227,11 +243,11 @@ with st.sidebar:
 
         st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
-            "Adcom max/day", 0, 8, st.session_state["sen_max_daily_range"],
+            "Adcom max/day", 0, 10, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
         )
         sen_max_total_min, sen_max_total_max = st.slider(
-            "Adcom max total", 0, 15, st.session_state["sen_max_total_range"],
+            "Adcom max total", 0, 10, st.session_state["sen_max_total_range"],
             step=int(granularity), key="sen_max_total_range"
         )
         sen_min_total_min, sen_min_total_max = st.slider(
@@ -245,7 +261,7 @@ with st.sidebar:
 
         # Per-scenario config
         scan_time_limit = st.number_input(
-            "Time limit per scenario (s)", 5, 120, min(60, int(time_limit)),
+            "Time limit per scenario (s)", 5, 900, min(60, int(time_limit)),
             key="scan_time_limit"
         )
         max_scenarios_warn = st.number_input(
@@ -558,7 +574,7 @@ if run_autoscan:
                 st.session_state["needs_rerun"] = True
                 st.info("Applied best defaults. Click **Run scheduler** to solve with these settings.")
 
-        # --- Run any scenario directly (LIMITED TO TOP 50) ---
+        # --- Run any of the top scenarios (skip rows with missing defaults) ---
         st.markdown("#### Run any of the top scenarios")
         try:
             file_bytes = up.getvalue()
@@ -566,6 +582,20 @@ if run_autoscan:
             file_bytes = None
 
         for _, row in df_scan_top.iterrows():
+            required_keys = [
+                "reg_max/day","reg_max_total","reg_min_total",
+                "adcom_max/day","adcom_max_total","adcom_min_total",
+            ]
+            # Show line without a Run button if any defaults are missing/not-a-number
+            if any(pd.isna(row[k]) for k in required_keys):
+                scen_label = int(row["Scenario #"]) if pd.notna(row["Scenario #"]) else "—"
+                st.write(
+                    f"**Scenario #{scen_label}** — Status: {row['Status']} • "
+                    f"Rooms: {row['Rooms Filled']} • Reg Pairs: {row['Reg Pairs']} • "
+                    f"Obj: {row['Objective']} • % Filled: {row['Percent Filled']}"
+                )
+                continue
+
             scn_id = int(row["Scenario #"])
             cols = st.columns([6, 1])
             with cols[0]:
@@ -656,7 +686,7 @@ res = current_res
 assign = res["assign"]
 pairs = res.get("pairs", {})                 # Regular pairs per Date_Time
 adcom_singles = res.get("adcom_singles")     # Adcom singles per Date_Time (may be None on older solver builds)
-b2b = res.get("b2b", {})
+b2b = res.get("b2b", {})  # may be unused depending on solver version
 
 # Use the inputs that correspond to the current results (scenario-run or normal)
 inputs_view = st.session_state.get("inputs_for_results", inputs)
