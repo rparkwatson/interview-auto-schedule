@@ -130,27 +130,34 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
             s = s.replace([np.inf, -np.inf], np.nan)
             safe[c] = s
 
-    # Helper: all non-null values are whole numbers?
+    # Helper: all non-null values are whole numbers (with tolerance)
     def _int_like(series: pd.Series) -> bool:
         vals = pd.to_numeric(series, errors="coerce")
         vals = vals[vals.notna()]
         if vals.empty:
             return True
-        return np.all(np.isfinite(vals) & (np.floor(vals) == vals))
+        # tolerate tiny FP noise
+        return bool(np.all(np.isfinite(vals) & np.isclose(vals, np.round(vals))))
 
     # Integer candidates: only cast to Int64 when safe; otherwise keep as float
     for c in INT_CANDIDATES:
         if c in safe.columns:
             vals = pd.to_numeric(safe[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
             if _int_like(vals):
-                safe[c] = vals.round(0).astype("Int64")
+                r = vals.round(0)
+                # Avoid Pandas' "safe" float→Int64 cast by doing the int cast first,
+                # then building a nullable IntegerArray with the NA mask.
+                mask = r.isna().to_numpy()
+                int_vals = r.fillna(0).astype("int64").to_numpy()
+                safe[c] = pd.Series(pd.arrays.IntegerArray(int_vals, mask), dtype="Int64")
             else:
-                safe[c] = vals  # remains float64 with NaN allowed
+                safe[c] = vals  # keep as float64 with NaN allowed
 
     if "Status" in safe.columns:
         safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
 
     return safe
+
 
 # ---------------------------
 # App init
