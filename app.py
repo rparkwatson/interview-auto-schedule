@@ -941,7 +941,10 @@ else:
 
     # ==== 1) Personal-best ladder (current vs best-so-far) ====
     st.markdown("#### Results")
-    base = alt.Chart(df_plot).properties(height=240)
+    base = alt.Chart(df_plot).properties(
+        width="container",
+        height=240,
+    )
 
     line_current = base.mark_line(point=True).encode(
         x=alt.X("Run #:O", title="Attempt #"),  # ordinal → whole-number ticks
@@ -969,7 +972,7 @@ else:
         y="Best So Far:Q",
     )
 
-    st.altair_chart((step_best + line_current + confetti), width='stretch')
+    st.altair_chart((step_best + line_current + confetti))
 
     # ==== 3) Milestone badges (gamified thresholds) ====
     st.markdown("#### 🏅 Milestones")
