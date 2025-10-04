@@ -5,3 +5,4 @@ numpy>=1.26
 python-dateutil>=2.9
 ortools>=9.9
 openpyxl>=3.1
+altair>=5,<6

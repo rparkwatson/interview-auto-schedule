@@ -7,6 +7,7 @@ import numpy as np
 import streamlit as st
 import io
 import itertools
+import altair as alt
 
 from scheduler.config import Settings
 from scheduler.io.read import read_inputs_from_legacy
@@ -177,7 +178,7 @@ if "last_results" not in st.session_state:
 # ---------------------------
 with st.sidebar:
     # 1) Assignment Limits
-    with st.expander("Assignment Limits", expanded=False):
+    with st.expander("Assignment Limits", expanded=True):
         st.markdown("**Select Group Constraints**")
         reg_max_daily = st.number_input("Regular MAX per day", 0, 24, 2, key="reg_max_daily", on_change=_mark_dirty)
         reg_max_total = st.number_input("Regular MAX total", 0, 999, 7, key="reg_max_total", on_change=_mark_dirty)
@@ -376,7 +377,7 @@ if "inputs_for_results" not in st.session_state:
     st.session_state["inputs_for_results"] = inputs
 
 # Preview
-st.markdown("### 2) Data preview")
+st.markdown("### 2) Data Preview")
 c1, c2, c3 = st.columns(3)
 with c1:
     st.metric("Interviewers", len(inputs.interviewers))
@@ -713,7 +714,7 @@ if run_autoscan:
 # -----------------------------------
 # 3) Solve (persistent results view)
 # -----------------------------------
-st.markdown("### 3) Solve")
+st.markdown("### 3) Start Scheduling")
 
 # Run button FIRST so we can clear stale state in the same render
 run_clicked = st.button("Run scheduler", type="primary")
@@ -906,9 +907,47 @@ if st.session_state.run_history:
     except Exception:
         df_hist = df_hist.sort_values("Run #", ascending=False)
     st.markdown("#### Run history")
-    st.dataframe(_arrow_safe_scan_df(df_hist), width='stretch')
 
-with st.expander("Per Date_Time room usage"):
+df_plot = (
+    df_hist.copy()
+    .assign(**{"Percent Filled": pd.to_numeric(df_hist["Percent Filled"], errors="coerce")})
+    .dropna(subset=["Percent Filled"])
+    .sort_values("Run #")
+    .reset_index(drop=True)
+)
+df_plot["Attempt"] = df_plot["Run #"].astype(int)
+
+# Optional: show deltas in tooltip
+df_plot["Δ Percent (pts)"] = df_plot["Percent Filled"].diff().round(1)
+
+chart = (
+    alt.Chart(df_plot)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("Attempt:Q", title="Attempt #"),
+        y=alt.Y("Percent Filled:Q", title="Percent filled (%)", scale=alt.Scale(domain=[0, 100])),
+        tooltip=[
+            alt.Tooltip("Attempt:Q", title="Attempt #"),
+            alt.Tooltip("Timestamp:N"),
+            alt.Tooltip("Percent Filled:Q", format=".1f", title="% Filled"),
+            alt.Tooltip("Δ Percent (pts):Q", format="+.1f", title="Δ % (pts)"),
+            alt.Tooltip("Filled:Q"),
+            alt.Tooltip("Capacity:Q"),
+            alt.Tooltip("Reg Max/Day:Q"),
+            alt.Tooltip("Reg Max Total:Q"),
+            alt.Tooltip("Reg Min Total:Q"),
+            alt.Tooltip("Adcom Max/Day:Q"),
+            alt.Tooltip("Adcom Max Total:Q"),
+            alt.Tooltip("Adcom Min Total:Q"),
+        ],
+    )
+    .properties(height=260)
+    .interactive()  # enables mouse hover tooltips & pan/zoom
+)
+
+st.altair_chart(chart, use_container_width=True)
+
+with st.expander("Time Slot Results"):
     df_slots_summary = pd.DataFrame([
         {"Date_Time": t, "Used_Rooms": rooms_used_by_t[t], "Capacity": int(cap_map.get(t, 0))}
         for t in slot_ids
@@ -925,7 +964,7 @@ with st.expander("Per Date_Time room usage"):
     # Controls
     col1, col2 = st.columns([1, 3])
     with col1:
-        only_unused = st.checkbox("Show only non-full slots", value=False)
+        only_unused = st.checkbox("Show only non-full slots", value=True)
     with col2:
         st.caption("Rows with unused rooms are highlighted and sorted to the top.")
 
@@ -976,7 +1015,7 @@ iv_df = pd.DataFrame([
 ]).sort_values(["interviewer"]) if by_i else pd.DataFrame(columns=["interviewer","count_model","slots"])
 
 # --- one collapsed section with tabs ---
-with st.expander("Detailed assignments", expanded=False):
+with st.expander("Interview Assignment Details", expanded=False):
     tabs = st.tabs(["By slot", "By interviewer"])
     with tabs[0]:
         st.dataframe(_arrow_safe_scan_df(slot_df), width='stretch')
