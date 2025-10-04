@@ -906,46 +906,132 @@ if st.session_state.run_history:
         df_hist = df_hist.sort_values("Timestamp_dt", ascending=False).drop(columns=["Timestamp_dt"])
     except Exception:
         df_hist = df_hist.sort_values("Run #", ascending=False)
-    st.markdown("#### Run history")
+    
+st.markdown("### 📈 Progress over time")
 
+# --- Prep tidy run-history data ---
 df_plot = (
     df_hist.copy()
-    .assign(**{"Percent Filled": pd.to_numeric(df_hist["Percent Filled"], errors="coerce")})
-    .dropna(subset=["Percent Filled"])
+    .assign(
+        **{
+            "Run #": pd.to_numeric(df_hist["Run #"], errors="coerce"),
+            "Percent Filled": pd.to_numeric(df_hist["Percent Filled"], errors="coerce"),
+        }
+    )
+    .dropna(subset=["Run #", "Percent Filled"])
     .sort_values("Run #")
     .reset_index(drop=True)
 )
-df_plot["Attempt"] = df_plot["Run #"].astype(int)
 
-# Optional: show deltas in tooltip
-df_plot["Δ Percent (pts)"] = df_plot["Percent Filled"].diff().round(1)
+if df_plot.empty:
+    st.info("No runs yet — hit **Run scheduler** to start building your progress history.")
+else:
+    # Personal-best tracking
+    df_plot["Best So Far"] = df_plot["Percent Filled"].cummax().round(1)
+    df_plot["Is PB"] = df_plot["Percent Filled"].eq(df_plot["Best So Far"])
+    df_plot["Δ % (pts)"] = df_plot["Percent Filled"].diff().round(1)
 
-chart = (
-    alt.Chart(df_plot)
-    .mark_line(point=True)
-    .encode(
-        x=alt.X("Attempt:O", title="Attempt #", sort="ascending"),  # 👈 ordinal (discrete)
-        y=alt.Y("Percent Filled:Q", title="Percent filled (%)", scale=alt.Scale(domain=[0, 100])),
+    current_pct = float(df_plot.iloc[-1]["Percent Filled"])
+    prev_best = float(df_plot["Percent Filled"][:-1].max()) if len(df_plot) > 1 else -float("inf")
+    new_pb = current_pct > prev_best
+
+    # 🎈 Celebrate a new personal best
+    if new_pb:
+        st.balloons()
+        st.toast(f"New personal best: {current_pct:.1f}% filled! 🎉", icon="🎯")
+
+    # ==== 1) Personal-best ladder (current vs best-so-far) ====
+    st.markdown("#### 🪜 Personal-best ladder")
+    base = alt.Chart(df_plot).properties(height=240)
+
+    line_current = base.mark_line(point=True).encode(
+        x=alt.X("Run #:O", title="Attempt #"),  # ordinal → whole-number ticks
+        y=alt.Y("Percent Filled:Q", title="% filled", scale=alt.Scale(domain=[0, 100])),
         tooltip=[
-            alt.Tooltip("Attempt:Q", title="Attempt #"),
+            alt.Tooltip("Run #:Q", title="Attempt #"),
             alt.Tooltip("Timestamp:N"),
-            alt.Tooltip("Percent Filled:Q", format=".1f", title="% Filled"),
-            alt.Tooltip("Δ Percent (pts):Q", format="+.1f", title="Δ % (pts)"),
+            alt.Tooltip("Percent Filled:Q", format=".1f", title="% filled"),
+            alt.Tooltip("Δ % (pts):Q", format="+.1f"),
             alt.Tooltip("Filled:Q"),
             alt.Tooltip("Capacity:Q"),
-            alt.Tooltip("Reg Max/Day:Q"),
-            alt.Tooltip("Reg Max Total:Q"),
-            alt.Tooltip("Reg Min Total:Q"),
-            alt.Tooltip("Adcom Max/Day:Q"),
-            alt.Tooltip("Adcom Max Total:Q"),
-            alt.Tooltip("Adcom Min Total:Q"),
         ],
     )
-    .properties(height=260)
-    .interactive()  # enables mouse hover tooltips & pan/zoom
-)
 
-st.altair_chart(chart, use_container_width=True)
+    step_best = base.mark_line(interpolate="step-after", strokeDash=[6, 4]).encode(
+        x=alt.X("Run #:O", title="Attempt #"),
+        y=alt.Y("Best So Far:Q", title="% filled"),
+        tooltip=[alt.Tooltip("Run #:Q"), alt.Tooltip("Best So Far:Q", format=".1f")],
+    )
+
+    confetti = base.transform_filter(alt.datum["Is PB"] == True).mark_text(
+        text="🎉", dy=-12, size=16
+    ).encode(
+        x="Run #:O",
+        y="Best So Far:Q",
+    )
+
+    st.altair_chart((step_best + line_current + confetti), use_container_width=True)
+
+    # ==== 2) Run replay (scrub to any attempt) ====
+    st.markdown("#### 🎬 Replay your progress")
+    max_attempt = int(df_plot["Run #"].max())
+    sel_attempt = st.slider("Replay up to attempt", 1, max_attempt, max_attempt, step=1, key="replay_sel")
+
+    df_replay = df_plot[df_plot["Run #"] <= sel_attempt]
+
+    area = alt.Chart(df_replay).mark_area(opacity=0.25).encode(
+        x=alt.X("Run #:O", title="Attempt #"),
+        y=alt.Y("Percent Filled:Q", title="% filled", scale=alt.Scale(domain=[0, 100])),
+        tooltip=[
+            alt.Tooltip("Run #:Q", title="Attempt #"),
+            alt.Tooltip("Timestamp:N"),
+            alt.Tooltip("Percent Filled:Q", format=".1f", title="% filled"),
+            alt.Tooltip("Filled:Q"),
+            alt.Tooltip("Capacity:Q"),
+        ],
+    ).properties(height=180)
+
+    line = alt.Chart(df_replay).mark_line(point=True).encode(
+        x="Run #:O",
+        y="Percent Filled:Q",
+    )
+
+    st.altair_chart(area + line, use_container_width=True)
+
+    # ==== 3) Milestone badges (gamified thresholds) ====
+    st.markdown("#### 🏅 Milestones")
+    milestones = [
+        (60, "🥉 Bronze"),
+        (80, "🥈 Silver"),
+        (90, "🥇 Gold"),
+        (95, "🏆 Trophy"),
+        (100, "👑 Perfect"),
+    ]
+
+    hit = [label for thr, label in milestones if current_pct >= thr]
+    next_goal = next((f"{thr}% → {label}" for thr, label in milestones if current_pct < thr), None)
+
+    cols = st.columns(len(milestones))
+    for col, (thr, label) in zip(cols, milestones):
+        achieved = current_pct >= thr
+        with col:
+            bg = "rgba(16,185,129,0.15)" if achieved else "rgba(148,163,184,0.15)"
+            st.markdown(
+                f"""
+                <div style="text-align:center;padding:10px;border-radius:10px;background:{bg}">
+                    <div style="font-size:26px;line-height:1">{label.split()[0]}</div>
+                    <div style="font-size:12px;color:#555">{label.split()[1]} • {thr}%</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if next_goal:
+        st.caption(f"Next goal: **{next_goal}** (current: {current_pct:.1f}%).")
+
+    # (optional) keep the raw table tucked away
+    with st.expander("Show run history table"):
+        st.dataframe(_arrow_safe_scan_df(df_hist), use_container_width=True)
 
 with st.expander("Time Slot Results"):
     df_slots_summary = pd.DataFrame([
