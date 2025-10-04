@@ -90,9 +90,9 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
             if not v or t not in cap_map_local or i not in iv_by_id_local:
                 continue
             kind = iv_by_id_local[i].kind
-            if kind == "AF":
+            if kind == "Regular":
                 reg_people_by_t_local[t] += 1
-            elif kind == "Adcom":
+            elif kind == "Senior":
                 adcom_people_by_t_local[t] += 1
         reg_pairs = sum(reg_people_by_t_local[t] // 2 for t in slot_ids_local)
         rooms_filled = int(reg_pairs + sum(adcom_people_by_t_local[t] for t in slot_ids_local))
@@ -180,9 +180,9 @@ with st.sidebar:
     # 1) Assignment Limits
     with st.expander("Assignment Limits", expanded=True):
         st.markdown("**Select Group Constraints**")
-        reg_max_daily = st.number_input("AF MAX per day", 0, 24, 2, key="reg_max_daily", on_change=_mark_dirty)
-        reg_max_total = st.number_input("AF MAX total", 0, 999, 7, key="reg_max_total", on_change=_mark_dirty)
-        reg_min_total = st.number_input("AF MIN total", 0, 999, 5, key="reg_min_total", on_change=_mark_dirty)
+        reg_max_daily = st.number_input("Regular MAX per day", 0, 24, 2, key="reg_max_daily", on_change=_mark_dirty)
+        reg_max_total = st.number_input("Regular MAX total", 0, 999, 7, key="reg_max_total", on_change=_mark_dirty)
+        reg_min_total = st.number_input("Regular MIN total", 0, 999, 5, key="reg_min_total", on_change=_mark_dirty)
         sen_max_daily = st.number_input("Adcom MAX per day", 0, 24, 2, key="sen_max_daily", on_change=_mark_dirty)
         sen_max_total = st.number_input("Adcom MAX total", 0, 999, 5, key="sen_max_total", on_change=_mark_dirty)
         sen_min_total = st.number_input("Adcom MIN total", 0, 999, 0, key="sen_min_total", on_change=_mark_dirty)
@@ -198,11 +198,11 @@ with st.sidebar:
 
         with st.expander("Objective Weights", expanded=False):
             w_pairs = st.number_input("Weight: pairs", 1000, 5_000_000, 1_000_000, step=1000, key="w_pairs", on_change=_mark_dirty)
-            w_fill = st.number_input("Weight: fill (AFs)", 10, 100_000, 1000, step=10, key="w_fill", on_change=_mark_dirty)
+            w_fill = st.number_input("Weight: fill (Regulars)", 10, 100_000, 1000, step=10, key="w_fill", on_change=_mark_dirty)
             w_b2b = st.number_input("Penalty: back-to-back", 0, 1000, 1, key="w_b2b", on_change=_mark_dirty)
 
         with st.expander("Scarcity Priority", expanded=False):
-            scarcity_bonus = st.number_input("Scarcity bonus (per missing AF)", 0, 100, 5, key="scarcity_bonus", on_change=_mark_dirty)
+            scarcity_bonus = st.number_input("Scarcity bonus (per missing Regular)", 0, 100, 5, key="scarcity_bonus", on_change=_mark_dirty)
             w_fill_adcom = st.number_input("Weight: fill (Adcom)", 0, 100_000, 500, step=10, key="w_fill_adcom", on_change=_mark_dirty)
 
         with st.expander("Global day caps (optional)", expanded=False):
@@ -217,7 +217,7 @@ with st.sidebar:
     with st.expander("Auto-scan defaults (experimental)", expanded=False):
         st.caption(
             "Pick ranges (inclusive). The solver will try every combination and rank by "
-            "Filled rooms, AF pairs, then Objective."
+            "Filled rooms, Regular pairs, then Objective."
         )
 
         # One step control for all sliders (quantization)
@@ -238,21 +238,21 @@ with st.sidebar:
         _init_range_state("sen_min_total_range", 0, 10, int(sen_min_total), width=w_total, step=int(granularity))
 
         # Render sliders (values come from session_state, and will persist)
-        st.markdown("**AFs**")
+        st.markdown("**Regulars**")
         reg_max_daily_min, reg_max_daily_max = st.slider(
-            "AF max/day", 0, 10, st.session_state["reg_max_daily_range"],
+            "Regular max/day", 0, 10, st.session_state["reg_max_daily_range"],
             step=int(granularity), key="reg_max_daily_range", help="Drag handles to set the inclusive min/max."
         )
         reg_max_total_min, reg_max_total_max = st.slider(
-            "AF max total", 0, 10, st.session_state["reg_max_total_range"],
+            "Regular max total", 0, 10, st.session_state["reg_max_total_range"],
             step=int(granularity), key="reg_max_total_range"
         )
         reg_min_total_min, reg_min_total_max = st.slider(
-            "AF min total", 0, 10, st.session_state["reg_min_total_range"],
+            "Regular min total", 0, 10, st.session_state["reg_min_total_range"],
             step=int(granularity), key="reg_min_total_range"
         )
 
-        st.markdown("**Adcom**")
+        st.markdown("**Adcoms**")
         sen_max_daily_min, sen_max_daily_max = st.slider(
             "Adcom max/day", 0, 10, st.session_state["sen_max_daily_range"],
             step=int(granularity), key="sen_max_daily_range"
@@ -789,9 +789,9 @@ else:
             continue
         if (i not in valid_ids) or (t not in valid_slots):
             continue
-        if iv_by_id[i].kind == "AF":
+        if iv_by_id[i].kind == "Regular":
             reg_people_by_t[t] += 1
-        elif iv_by_id[i].kind == "Adcom":
+        elif iv_by_id[i].kind == "Senior":
             adcom_people_by_t[t] += 1
     for t in slot_ids:
         rooms_used_by_t[t] = (reg_people_by_t[t] // 2) + adcom_people_by_t[t]
@@ -817,21 +817,21 @@ adcom_pct_capacity = 0.0 if total_capacity == 0 else 100.0 * adcom_rooms_used / 
 
 c1, c2 = st.columns(2)
 with c1:
-    st.metric("Admissions Fellows", f"{reg_rooms_used}/{total_capacity}",
-              help="Rooms occupied by AF pairs (2 people per room).")
+    st.metric("Regular (rooms)", f"{reg_rooms_used}/{total_capacity}",
+              help="Rooms occupied by Regular pairs (2 people per room).")
     st.progress(min(max(reg_pct_capacity/100.0, 0.0), 1.0),
                 text=f"{reg_share_used:.1f}% of used • {reg_pct_capacity:.1f}% of capacity")
 
 with c2:
-    st.metric("Adcom", f"{adcom_rooms_used}/{total_capacity}",
-              help="Rooms occupied by Adcom (1 person per room).")
+    st.metric("Adcom (rooms)", f"{adcom_rooms_used}/{total_capacity}",
+              help="Rooms occupied by Adcom singles (1 person per room).")
     st.progress(min(max(adcom_pct_capacity/100.0, 0.0), 1.0),
                 text=f"{adcom_share_used:.1f}% of used • {adcom_pct_capacity:.1f}% of capacity")
 
 # Optional: summary table
-with st.expander("AF vs Adcom Assignments"):
+with st.expander("Regular vs Adcom Assignments"):
     df_group = pd.DataFrame([
-        {"Group": "AF", "Rooms Used": reg_rooms_used,
+        {"Group": "Regular", "Rooms Used": reg_rooms_used,
          "Share of Used (%)": round(reg_share_used, 1),
          "Pct of Capacity (%)": round(reg_pct_capacity, 1)},
         {"Group": "Adcom", "Rooms Used": adcom_rooms_used,
