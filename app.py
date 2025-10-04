@@ -924,7 +924,7 @@ chart = (
     alt.Chart(df_plot)
     .mark_line(point=True)
     .encode(
-        x=alt.X("Attempt:Q", title="Attempt #"),
+        x=alt.X("Attempt:O", title="Attempt #", sort="ascending"),  # 👈 ordinal (discrete)
         y=alt.Y("Percent Filled:Q", title="Percent filled (%)", scale=alt.Scale(domain=[0, 100])),
         tooltip=[
             alt.Tooltip("Attempt:Q", title="Attempt #"),
