@@ -23,7 +23,7 @@ with c1:
         st.switch_page("pages/01_Builder.py")
 
 with c2:
-    st.subheader("Step 2 — Scheduler")
+    st.subheader("Step 2 — Run Scheduler")
     st.write("Use the formatted workbook to run the solver, scan scenarios, and export reports.")
 
     # enable only if Step 1 produced bytes
