@@ -936,8 +936,13 @@ else:
     new_pb = current_pct > prev_best
 
     # Celebrate a new personal best
-    if new_pb:
-        st.toast(f"New personal best: {current_pct:.1f}% filled! 🎉", icon="🎯")
+    last_attempt = int(df_plot.iloc[-1]["Run #"])
+    last_pct_10 = int(round(float(df_plot.iloc[-1]["Percent Filled"]) * 10))  # tenths to avoid float noise
+    pb_key = (last_attempt, last_pct_10)
+
+    if new_pb and st.session_state.get("celebrated_pb_key") != pb_key:
+        st.toast(f"New personal best: {df_plot.iloc[-1]['Percent Filled']:.1f}% filled! 🎉", icon="🎯")
+        st.session_state["celebrated_pb_key"] = pb_key
 
     # ==== 1) Personal-best ladder (current vs best-so-far) ====
     st.markdown("#### Results")
