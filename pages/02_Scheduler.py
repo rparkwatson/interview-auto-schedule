@@ -176,15 +176,15 @@ st.markdown(
 
         1. Complete Step 1 - Build the Workbook to automatically pass the excel file to Step 2
 
-        2. Review summary stats. The app will display summary statistics for the file.
+        2. Review Data Preview. The app will display summary statistics for the file.
 
-        3. Set limits. In the left sidebar, adjust Scheduler Limits.
+        3. Set limits. In the left sidebar, adjust **Scheduler Limits**.
 
-        4. Run. Click Run Scheduler.
+        4. Run. **Click Run Scheduler**.
 
         5. Iterate. You can run the scheduler multiple times, changing group constraints as needed.
 
-        6. Compare results. The result for each run is saved in the Show Run History Table.
+        6. Compare results. The result for each run is saved in **Scheduler Results** section.
     """)
 
 if "needs_rerun" not in st.session_state:
