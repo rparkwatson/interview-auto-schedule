@@ -168,6 +168,25 @@ def _to_int_or_none(x):
 # ---------------------------
 st.set_page_config(page_title="Scheduler", layout="wide")
 st.title("🎯 Step 2 - Interview Scheduler")
+
+st.subheader("Instructions")
+st.markdown(
+    """
+        Run the Scheduler
+
+        1. Complete Step 1 - Build the Workbook to automatically pass the excel file to Step 2
+
+        2. Review summary stats. The app will display summary statistics for the file.
+
+        3. Set limits. In the left sidebar, adjust Scheduler Limits.
+
+        4. Run. Click Run Scheduler.
+
+        5. Iterate. You can run the scheduler multiple times, changing group constraints as needed.
+
+        6. Compare results. The result for each run is saved in the Show Run History Table.
+    """)
+
 if "needs_rerun" not in st.session_state:
     st.session_state["needs_rerun"] = False
 if "last_results" not in st.session_state:
