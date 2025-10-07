@@ -174,7 +174,7 @@ st.markdown(
     """
         Run the Scheduler
 
-        1. Complete Step 1 - Build the Workbook to automatically pass the excel file to Step 2
+        1. Complete **Step 1 - Build the Workbook** to automatically pass the excel file to Step 2
 
         2. Review Data Preview. The app will display summary statistics for the file.
 
