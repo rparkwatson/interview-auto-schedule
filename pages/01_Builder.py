@@ -17,7 +17,7 @@ st.title("Step 1 — Upload → Convert → Edit → Generate")
 st.subheader("Instructions")
 st.markdown(
     """
-    Use this app to process the AF and Adcom availability spreadsheets.
+    Use this app to process the AF/Regular and Adcom availability spreadsheets.
     Upload a .xlsx file for each group then click **Proceed**.
     
     After processing, you will be prompted to input date/time slot capacity and pre-assigned interview counts (if required). 
