@@ -453,12 +453,12 @@ with st.sidebar:
         adcom_count_header = st.text_input("Adcom count header", value="Pre_Assigned_Count")
 
     # NEW: Re-code UI
-    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=False):
+    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=True):
         st.markdown(
             "If present on the Regular sheet, these interviewers will be moved to the Adcom sheet (before counts are injected)."
         )
-        recode_name_1 = st.text_input("Name #1", value="")
-        recode_name_2 = st.text_input("Name #2", value="")
+        recode_name_1 = st.text_input("Name #1", value="Kimberly Oliva")
+        recode_name_2 = st.text_input("Name #2", value="Priya Trauber")
         recode_extra_csv = st.text_input("Additional names (comma-separated, optional)", value="")
         recode_list = [recode_name_1, recode_name_2] + [x.strip() for x in recode_extra_csv.split(",") if x.strip()]
         st.session_state.recode_names_norm = _recode_names_normalized(recode_list)
