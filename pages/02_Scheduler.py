@@ -103,11 +103,11 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
 def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
     """
     Prepare a DataFrame for st.dataframe() to avoid Arrow/casting errors.
-    - Coerces numeric columns
-    - Uses Int64 only when values are truly integer-like and within int64 bounds
-    - Falls back to float if values exceed int64 bounds
+    - Coerces float-like columns
+    - Casts integer-like columns to Int64 when safe
+    - If any value exceeds int64 bounds, converts that entire column to string
     - Replaces ±inf with NaN
-    - Optionally limits to top `max_rows`
+    - Optionally limits rows
     - Truncates long Status cells
     """
     if df is None or df.empty:
@@ -118,62 +118,62 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
     if max_rows is not None and len(safe) > max_rows:
         safe = safe.head(max_rows)
 
-    # NEW: add all the integer-ish columns used across the app
     INT_CANDIDATES = [
         "Scenario #", "Rooms Filled", "Reg Pairs", "Capacity",
         "Filled", "Run #",
-        # NEW important ones:
         "Rooms Used", "Used_Rooms", "Unused_Rooms",
     ]
-
     FLOAT_COLS = [
-        "Percent Filled", "Objective", "Pct of Capacity (%)",
-        "Share of Used (%)",
-        # NEW: appears in the slot summary
-        "Unused_%"
+        "Percent Filled", "Objective",
+        "Pct of Capacity (%)", "Share of Used (%)",
+        "Unused_%",
     ]
 
-    # Normalize floats
+    # 1) Floats
     for c in FLOAT_COLS:
         if c in safe.columns:
             s = pd.to_numeric(safe[c], errors="coerce")
-            s = s.replace([np.inf, -np.inf], np.nan)
-            safe[c] = s
+            s = s.replace([np.inf, -np.inf], pd.NA)
+            safe[c] = s.astype("Float64")
 
+    # 2) Ints (with overflow guard)
     MAX_I64 = np.iinfo(np.int64).max
 
-    def _is_int_like(v: pd.Series) -> bool:
-        vv = pd.to_numeric(v, errors="coerce")
-        vv = vv[~vv.isna()].astype(float)
-        if vv.empty:
-            return True
-        return np.isfinite(vv).all() and np.isclose(vv % 1, 0).all()
+    def _coerce_intish(col: pd.Series) -> pd.Series:
+        v = pd.to_numeric(col, errors="coerce")  # may be Int64/float/object of big-ints
+        v = v.replace([np.inf, -np.inf], pd.NA)
 
-    def _coerce_int_column(series: pd.Series) -> pd.Series:
-        v = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
-        # If any value exceeds int64 bounds, fall back to float to avoid Arrow overflow
+        # Detect any value outside int64 bounds
+        big = v.dropna()
         try:
-            max_abs = v.dropna().abs().max()
+            exceeds = (big.abs() > MAX_I64).any()
         except Exception:
-            max_abs = None
-        if max_abs is not None and max_abs > MAX_I64:
-            return v.astype(float)
-        # Otherwise, keep integer semantics if truly integral
-        if _is_int_like(v):
+            exceeds = True  # if weird dtype, force safe path
+
+        if exceeds:
+            # Convert entire column to strings to keep Arrow happy
+            return col.astype(str)
+
+        # If integral-like, keep as Int64 (nullable)
+        # If not integral, fall back to Float64 to be safe
+        v_float = pd.to_numeric(v, errors="coerce").astype("Float64")
+        is_integral = v_float.dropna().apply(lambda x: float(x).is_integer()).all()
+        if is_integral:
             try:
-                return v.astype("Int64")  # nullable int
+                return v.astype("Int64")
             except Exception:
-                return v.astype(float)
-        return v.astype(float)
+                return v_float
+        return v_float
 
     for c in INT_CANDIDATES:
         if c in safe.columns:
-            safe[c] = _coerce_int_column(safe[c])
+            safe[c] = _coerce_intish(safe[c])
 
     if "Status" in safe.columns:
         safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
 
     return safe
+
 
 
 def _to_int_or_none(x):

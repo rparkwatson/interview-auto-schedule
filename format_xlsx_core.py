@@ -237,29 +237,43 @@ def build_formatted_workbook_bytes(
     """
     master_df, max_df, adcom_df = parse_primary_and_adcom(primary_file_like, adcom_file_like, header_row)
 
-    # Ensure Max_Pairs exists and is clean integer without downcast warnings
+    # Ensure Max_Pairs exists and coerce cleanly to integer (no FutureWarning)
     if "Max_Pairs" not in max_df.columns:
         max_df["Max_Pairs"] = 0
+
     max_df["Max_Pairs"] = (
         pd.to_numeric(max_df["Max_Pairs"], errors="coerce")
           .fillna(0)
+          .clip(lower=0)        # no negative capacities
           .astype("int64")
     )
 
-    # Apply any per-slot overrides
+    # Apply any per-slot overrides (keyed by Date_Time)
     if max_pairs_overrides:
-        # Expect overrides keyed by Date_Time
-        max_df = max_df.set_index("Date_Time", drop=False)
-        for dt, val in max_pairs_overrides.items():
-            if dt in max_df.index:
-                try:
-                    max_df.at[dt, "Max_Pairs"] = int(val)
-                except Exception:
-                    pass
-        max_df = max_df.reset_index(drop=True)
+        if "Date_Time" in max_df.columns:
+            max_df = max_df.set_index("Date_Time", drop=False)
+            for dt, val in max_pairs_overrides.items():
+                if dt in max_df.index:
+                    try:
+                        max_df.at[dt, "Max_Pairs"] = max(0, int(val))
+                    except Exception:
+                        # ignore bad override values
+                        pass
+            max_df = max_df.reset_index(drop=True)
+        else:
+            logging.warning("Max_Pairs overrides provided but 'Date_Time' column is missing; overrides skipped.")
+
+    # Re-coerce after overrides to guarantee int64 dtype
+    max_df["Max_Pairs"] = (
+        pd.to_numeric(max_df["Max_Pairs"], errors="coerce")
+          .fillna(0)
+          .clip(lower=0)
+          .astype("int64")
+    )
 
     program_info_df = create_program_info_df()
     validate_data(master_df, max_df, adcom_df)
+
     xlsx_bytes = _export_to_excel_bytes(program_info_df, master_df, max_df, adcom_df)
 
     return xlsx_bytes, {
