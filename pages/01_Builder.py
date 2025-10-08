@@ -6,7 +6,12 @@ import pandas as pd
 import openpyxl
 from adcom_contingency import maybe_convert_adcom_excel
 
-from format_xlsx_core import parse_primary_and_adcom, build_formatted_workbook_bytes
+from format_xlsx_core import (
+    parse_primary_and_adcom,
+    build_formatted_workbook_bytes,
+    load_workbook_from_filelike,          
+    extract_date_time_slots,              
+)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Page setup
@@ -572,6 +577,49 @@ if proceed_clicked and uploads_present:
             st.warning(f"Adcom contingency conversion skipped: {conv_err}")
             a_bytes_conv = a_bytes
         # ────────────────────────────────────────────────────────────────────────
+        # ── CONTRACT TEST: ensure Adcom Date_Time columns match Primary ──
+        try:
+            HEADER_ROW = header_row  # keep in sync with the sidebar control (0-based)
+
+            # Fresh streams for parsing
+            p_bio_ct = io.BytesIO(p_bytes)
+            a_bio_ct = io.BytesIO(a_bytes_conv)
+
+            # Parse date/time slots exactly how format_xlsx_core will
+            pwb = load_workbook_from_filelike(p_bio_ct)
+            p_master_avail_ct, p_max_slots_ct, _ = extract_date_time_slots(pwb, header_row=HEADER_ROW)
+            primary_slots = {str(s["Date_Time"]) for s in p_max_slots_ct}
+
+            awb = load_workbook_from_filelike(a_bio_ct)
+            a_master_avail_ct, a_max_slots_ct, _ = extract_date_time_slots(awb, header_row=HEADER_ROW)
+            adcom_slots = {str(s["Date_Time"]) for s in a_max_slots_ct}
+
+            missing = sorted(primary_slots - adcom_slots)
+            extra   = sorted(adcom_slots - primary_slots)
+
+            if missing:
+                st.error(
+                    f"Adcom is missing {len(missing)} slot(s) that exist in the AF/Regular upload. "
+                    f"Examples: {missing[:6]}"
+                )
+                dbg = pd.DataFrame({"Missing_Date_Time": missing})
+                st.download_button(
+                    "⬇️ Download missing Date_Time list (CSV)",
+                    dbg.to_csv(index=False).encode("utf-8"),
+                    file_name="adcom_missing_slots.csv",
+                    mime="text/csv",
+                    key="dl_adcom_missing_slots",
+                )
+                st.stop()
+
+            if extra:
+                st.warning(
+                    f"Adcom has {len(extra)} extra slot(s) not present in the AF/Regular upload. "
+                    f"Examples: {extra[:6]} — they will be ignored later."
+                )
+        except Exception as ct_err:
+            st.warning(f"Contract test could not be completed: {ct_err}")
+# ────────────────────────────────────────────────────────────────────────
 
         # Persist the original AF bytes and the (possibly converted) Adcom bytes
         st.session_state.primary_bytes = p_bytes

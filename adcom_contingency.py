@@ -166,78 +166,70 @@ def maybe_convert_adcom_excel(
     file_like,
     example_file_like: Optional[io.BytesIO] = None,
     default_year: int = 2025,
+    align_to_file_like: Optional[io.BytesIO] = None,  # NEW: pass the primary workbook (raw)
+    header_row_index: int = 3,                         # matches format_xlsx_core header_row
 ) -> bytes:
     """
-    If the workbook contains an Adcom 'matrix' sheet (multi-line date/time headers per column),
-    convert it into the example-conformant time-sheeted format (A1:I1 & A3:I3 merged, 9 date columns,
-    sheets: 8 AM, 10:30 AM, 1:00 PM, 3:30 PM, 6:00 PM, with 10:00→10:30 block).
-    Otherwise return original bytes.
+    Convert an 'adcom matrix' sheet into time-sheet tabs that format_xlsx_core can parse.
 
-    Returns: Excel bytes (possibly unchanged).
+    - Headers at row = header_row_index (0-based) like "Monday (10/27)".
+    - Sheet names among {"8 AM","10:30 AM","1:00 PM","3:30 PM","6:00 PM"} which
+      format_xlsx_core.format_sheet_time(...) maps to {"8AM","1030AM","1PM","330PM","6PM"}.
+    - If align_to_file_like is provided (recommended), the date set/order will match
+      the primary workbook's date columns exactly (e.g., "10/27","10/29",...).
     """
-    # Original bytes
+    import xlsxwriter
+    from xlsxwriter.utility import xl_range
+
+    # --- read original bytes
     xls_bytes = file_like.getvalue() if hasattr(file_like, "getvalue") else file_like.read()
     bio = io.BytesIO(xls_bytes)
 
-    # List sheets
+    # --- list sheets; if unreadable, pass-through
     try:
         xf = pd.ExcelFile(bio)
         sheet_names = xf.sheet_names
     except Exception:
-        # If unreadable by pandas, just pass through
         return xls_bytes
 
-    # Pass 1: try preferred names (case-insensitive exact match)
+    # --- find the strongest matrix-like sheet (unchanged logic)
     candidates_priority = []
     lower_map = {s.lower(): s for s in sheet_names}
     for want in PREFERRED_SHEET_NAMES:
         s = lower_map.get(want.lower())
         if s:
             candidates_priority.append(s)
-
-    # Pass 2: try sheets with tokens 'adcom' and/or 'availability' in name
     for s in sheet_names:
         sl = s.lower()
         if ("adcom" in sl) or ("ad com" in sl) or ("adcom_" in sl):
             if s not in candidates_priority:
                 candidates_priority.append(s)
     for s in sheet_names:
-        sl = s.lower()
-        if "availability" in sl and s not in candidates_priority:
-            candidates_priority.append(s)
-
-    # Always include all sheets at the end as a last resort
-    for s in sheet_names:
         if s not in candidates_priority:
             candidates_priority.append(s)
 
-    # Evaluate candidates and pick strongest matrix sheet
-    best = None  # (sheet_name, header_rows, header_cells, score)
+    best = None
     for s in candidates_priority:
         try:
             df = pd.read_excel(io.BytesIO(xls_bytes), sheet_name=s, header=None, dtype=str).fillna("")
         except Exception:
             continue
         is_matrix, hdr_rows, hdr_cells, score = _detect_matrix_sheet(df)
-        if is_matrix:
-            if (best is None) or (score > best[3]):
-                best = (s, hdr_rows, hdr_cells, score)
-
-    # If no matrix-like sheet: return original
+        if is_matrix and (best is None or score > best[3]):
+            best = (s, hdr_rows, hdr_cells, score)
     if best is None:
         return xls_bytes
 
-    # Convert chosen sheet
+    # --- parse the chosen sheet into (timesheets, display_headers_by_date)
     sheet_name, header_rows, header_cells, _ = best
-    df = pd.read_excel(io.BytesIO(xls_bytes), sheet_name=sheet_name, header=None, dtype=str).fillna("")
+    df_sheet = pd.read_excel(io.BytesIO(xls_bytes), sheet_name=sheet_name, header=None, dtype=str).fillna("")
 
-    # Year inference from filename (fallback to default)
     year = _infer_year_from_name(file_like, default_year)
+    timesheets, display_headers_by_date = _build_timesheets(df_sheet, header_rows, header_cells, year)
+    # timesheets: { "8:00 AM": OrderedDict({ "Mon 10/27/2025": [names...] , ... }) , ... }
+    # display_headers_by_date: { "Mon 10/27/2025": "Monday (10/27)", ... }
 
-    # Build timesheets
-    timesheets, display_headers_by_date = _build_timesheets(df, header_rows, header_cells, year)
-
-    # Convert 10:00 AM → 10:30 AM
+    # --- (conditional) rewrite 10:00 -> 10:30 ONLY if we will emit a 10:30 tab
     if "10:00 AM" in timesheets:
         if "10:30 AM" not in timesheets:
             timesheets["10:30 AM"] = timesheets["10:00 AM"]
@@ -247,42 +239,63 @@ def maybe_convert_adcom_excel(
                 timesheets["10:30 AM"][dkey].extend(names)
         del timesheets["10:00 AM"]
 
-    # Determine date headers/order from example if provided; else derive from data
-    if example_file_like:
-        wb_ex = load_workbook(example_file_like)
-        ex_sheet = wb_ex.active
-        example_banner = ex_sheet["A1"].value or ""
-        example_headers = [ex_sheet.cell(row=4, column=c).value for c in range(1, 10)]
+    # --- decide the final date list/order for headers on every time-sheet
+    def _mmdd_from_display(hdr: str) -> str:
+        # "Monday (10/27)" -> "10/27"
+        m = re.search(r"\((\d{1,2}/\d{1,2})\)", hdr)
+        return m.group(1) if m else ""
 
-        dow_to_abbrev = {
-            "Monday": "Mon", "Tuesday": "Tue", "Wednesday": "Wed", "Thursday": "Thu",
-            "Friday": "Fri", "Saturday": "Sat", "Sunday": "Sun",
-        }
-        example_date_keys = []
-        for h in example_headers:
-            dow, rest = h.split("(", 1)
-            dow = dow.strip()
-            mm, dd = rest.strip(") ").split("/")
-            example_date_keys.append(f"{dow_to_abbrev.get(dow, dow[:3])} {int(mm)}/{int(dd)}/{year}")
-    else:
-        # Derive headers from detected dates (chronological, first 9)
-        all_dates = sorted(display_headers_by_date.keys(), key=_date_sort_key)
-        picked = all_dates[:9]
-        example_date_keys = picked
-        example_headers = [display_headers_by_date[d] for d in picked]
-        # Simple banner (best effort)
-        left = " ; ".join(example_headers[:5]) if example_headers else ""
-        example_banner = f"Round 1 TBD Dates: {left}"
+    # (A) If we can align to the primary workbook, copy its date order exactly
+    aligned_mmdd: List[str] = []
+    if align_to_file_like is not None:
+        try:
+            # emulate format_xlsx_core: read every sheet, pick columns that contain "("
+            pwb = load_workbook_from_filelike(align_to_file_like)
+            seen = []
+            for s in pwb.sheet_names:
+                try:
+                    sheet = pwb.parse(s, header=header_row_index)
+                except Exception:
+                    continue
+                date_columns = [c for c in sheet.columns if isinstance(c, str) and "(" in c]
+                for c in date_columns:
+                    mmdd = extract_date(c)  # reuses format_xlsx_core behavior
+                    if mmdd and mmdd not in seen:
+                        seen.append(mmdd)
+            aligned_mmdd = seen
+        except Exception:
+            aligned_mmdd = []
 
-    # Time windows
-    time_windows = {
-        "8:00 AM": ("8:00 AM", "9:30 AM"),
-        "10:30 AM": ("10:30 AM", "12:00 PM"),
-        "1:00 PM": ("1:00 PM", "2:30 PM"),
-        "3:30 PM": ("3:30 PM", "5:00 PM"),
-        "6:00 PM": ("6:00 PM", "7:30 PM"),
-    }
+    # (B) If no primary is supplied, derive from the data we parsed (chronological)
+    if not aligned_mmdd:
+        all_keys = sorted(display_headers_by_date.keys(), key=_date_sort_key)
+        aligned_mmdd = []
+        for k in all_keys:
+            hdr = display_headers_by_date[k]  # "Monday (10/27)"
+            mmdd = _mmdd_from_display(hdr)
+            if mmdd:
+                aligned_mmdd.append(mmdd)
 
+    # Build the display headers in the final order
+    mmdd_to_dkey = {}  # "10/27" -> "Mon 10/27/2025"
+    for dkey, hdr in display_headers_by_date.items():
+        mmdd = _mmdd_from_display(hdr)
+        if mmdd and mmdd not in mmdd_to_dkey:
+            mmdd_to_dkey[mmdd] = dkey
+
+    final_headers: List[str] = []
+    final_date_keys: List[str] = []
+    for mmdd in aligned_mmdd:
+        dkey = mmdd_to_dkey.get(mmdd)
+        if dkey:
+            final_headers.append(display_headers_by_date[dkey])  # "Monday (10/27)"
+            final_date_keys.append(dkey)
+
+    # if still nothing, bail out pass-through
+    if not final_headers:
+        return xls_bytes
+
+    # --- target time tabs (these are the ones format_xlsx_core knows)
     desired_sheets = [
         ("8 AM", "8:00 AM"),
         ("10:30 AM", "10:30 AM"),
@@ -291,33 +304,56 @@ def maybe_convert_adcom_excel(
         ("6:00 PM", "6:00 PM"),
     ]
 
-    # Build formatted workbook
-    import xlsxwriter
+    # --- write the normalized workbook
     out = io.BytesIO()
     wb = xlsxwriter.Workbook(out)
 
-    fmt_title = wb.add_format({"bold": True, "align": "center", "valign": "vcenter"})
+    fmt_title    = wb.add_format({"bold": True, "align": "center", "valign": "vcenter"})
     fmt_subtitle = wb.add_format({"bold": True, "align": "center", "valign": "vcenter"})
-    fmt_header = wb.add_format({"bold": True, "align": "center"})
-    fmt_name = wb.add_format({"align": "left"})
+    fmt_header   = wb.add_format({"bold": True, "align": "center"})
+    fmt_name     = wb.add_format({"align": "left"})
+
+    # a light, safe banner
+    example_banner = " | ".join(final_headers[:5]) if final_headers else "Adcom Availability"
 
     for display_name, time_key in desired_sheets:
         ws = wb.add_worksheet(_sanitize_sheet(display_name))
-        # Merged title & time window rows
-        ws.merge_range("A1:I1", example_banner, fmt_title)
-        start, end = time_windows.get(time_key, (time_key, ""))
-        ws.merge_range("A3:I3", f"{start} - {end}".strip(), fmt_subtitle)
-        # Row 4: headers
-        for c, hdr in enumerate(example_headers):
-            ws.write(3, c, hdr, fmt_header)
-        # Names
+
+        C = len(final_headers)
+        # Merge title row (row 0) and time-window row (row 2) using numeric coords
+        ws.merge_range(0, 0, 0, max(0, C - 1), example_banner, fmt_title)
+        # Second merged row shows the time window text (optional; purely cosmetic)
+        ws.merge_range(2, 0, 2, max(0, C - 1), display_name, fmt_subtitle)
+
+        # Write the header row at header_row_index (default 3 -> Excel row 4)
+        for c, hdr in enumerate(final_headers):
+            ws.write(header_row_index, c, hdr, fmt_header)
+
+        # Names body: align our internal date_keys to the header order
         date_map = timesheets.get(time_key, OrderedDict())
-        for c, dkey in enumerate(example_date_keys):
+        col_to_names: List[List[str]] = []
+        for dkey in final_date_keys:
             names = list(date_map.get(dkey, []))
-            for r, name in enumerate(names, start=4):
+            # normalize & de-dup within a column
+            seen = set()
+            nn = []
+            for n in names:
+                n = re.sub(r"\s+", " ", str(n)).strip()
+                low = n.lower()
+                if n and low not in seen:
+                    seen.add(low)
+                    nn.append(n.title())  # match format_xlsx_core normalization
+            col_to_names.append(nn)
+
+        # Write names below the header
+        for c, names in enumerate(col_to_names):
+            for r, name in enumerate(names, start=header_row_index + 1):
                 ws.write(r, c, name, fmt_name)
-        ws.set_column(0, 8, 20)
+
+        # make columns reasonably wide
+        ws.set_column(0, max(0, C - 1), 20)
 
     wb.close()
     out.seek(0)
     return out.read()
+
