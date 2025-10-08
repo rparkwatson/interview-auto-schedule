@@ -375,7 +375,6 @@ with st.sidebar:
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty, disabled=True)
 
 # 3) Auto-scan Defaults (SLIDER-BASED with wider first-run defaults)
-# 3) Auto-scan Defaults (SLIDER-BASED with wider first-run defaults)
     with st.expander("Auto-scan defaults (experimental)", expanded=False):
         st.caption(
             "Pick ranges (inclusive). The solver will try every combination and rank by "
@@ -391,7 +390,7 @@ with st.sidebar:
         w_day = 3
         w_total = 10
 
-        # --- Ensure canonical values exist ---
+        # --- Ensure canonical values exist (used as centers on 1st run) ---
         st.session_state.setdefault("reg_max_daily", 2)
         st.session_state.setdefault("reg_min_total", 5)
         st.session_state.setdefault("reg_max_total", 7)
@@ -406,36 +405,51 @@ with st.sidebar:
         _init_range_state("sen_max_total_range", 0, 10, int(st.session_state["sen_max_total"]), width=w_total, step=step)
         _init_range_state("sen_min_total_range", 0, 10, int(st.session_state["sen_min_total"]), width=w_total, step=step)
 
-        # --- Helpers ---
-        def _align_up(x: int, base: int, step: int) -> int:
-            return base + ((x - base + step - 1) // step) * step
+        # --- Helpers: snap + enforce dependency with STATIC slider bounds (0..10) ---
+        def _snap_up(x: int, step: int) -> int:
+            return ((int(x) + step - 1) // step) * step
 
-        def _align_down(x: int, base: int, step: int) -> int:
-            return base + ((x - base) // step) * step
+        def _snap_down(x: int, step: int) -> int:
+            return (int(x) // step) * step
 
-        def _normalize_range(key: str, dyn_min: int, dyn_max: int, step: int):
-            """Clamp and snap a stored (lo,hi) to [dyn_min,dyn_max] and step grid based on dyn_min."""
+        def _normalize_range_to_static_bounds(key: str, lo_bound: int = 0, hi_bound: int = 10, step: int = 1):
+            """Clamp (lo,hi) to [lo_bound,hi_bound] and snap both ends to the step grid with origin at 0."""
             lo, hi = st.session_state[key]
-            # clamp to bounds
-            lo = max(dyn_min, min(dyn_max, int(lo)))
-            hi = max(dyn_min, min(dyn_max, int(hi)))
-            # snap to current step grid (grid origin = dyn_min)
-            lo = _align_up(lo, dyn_min, step)
-            hi = _align_down(hi, dyn_min, step)
-            # ensure non-decreasing
+            lo = max(lo_bound, min(hi_bound, int(lo)))
+            hi = max(lo_bound, min(hi_bound, int(hi)))
+            lo = _snap_up(lo, step)
+            hi = _snap_down(hi, step)
             if hi < lo:
                 hi = lo
-            # clamp again in case snapping overshot
-            lo = max(dyn_min, min(dyn_max, lo))
-            hi = max(dyn_min, min(dyn_max, hi))
+            lo = max(lo_bound, min(hi_bound, lo))
+            hi = max(lo_bound, min(hi_bound, hi))
             st.session_state[key] = (lo, hi)
 
-        def _clamp_max_to_min(min_key: str, max_key: str):
-            """Ensure lower handle of Max >= upper handle of Min, then snap to step."""
+        def _enforce_total_dependency(min_key: str, max_key: str, lo_bound: int = 0, hi_bound: int = 10, step: int = 1):
+            """
+            Ensure lower handle of MAX >= upper handle of MIN, then snap & clamp to static bounds.
+            This avoids dynamic slider bounds (no changing min_value on the MAX slider).
+            """
             min_lo, min_hi = st.session_state[min_key]
             max_lo, max_hi = st.session_state[max_key]
+
+            # First normalize both ranges to the static [0,10] grid
+            _normalize_range_to_static_bounds(min_key, lo_bound, hi_bound, step)
+            _normalize_range_to_static_bounds(max_key, lo_bound, hi_bound, step)
+
+            # Re-read after normalization
+            _, min_hi = st.session_state[min_key]
+            max_lo, max_hi = st.session_state[max_key]
+
+            # Enforce dependency: max.lower >= min.upper
             new_lo = max(max_lo, min_hi)
+            new_lo = _snap_up(new_lo, step)
             new_hi = max(max_hi, new_lo)
+            new_hi = _snap_down(new_hi, step)
+
+            # Final clamp
+            new_lo = max(lo_bound, min(hi_bound, new_lo))
+            new_hi = max(lo_bound, min(hi_bound, new_hi))
             st.session_state[max_key] = (new_lo, new_hi)
 
         # ---------- Render sliders ----------
@@ -451,27 +465,24 @@ with st.sidebar:
             help="Set the maximum per day."
         )
 
-        # REG: MIN total first. Normalize it to [0,10] and step before rendering.
-        _normalize_range("reg_min_total_range", dyn_min=0, dyn_max=10, step=step)
+        # REG: render MIN total; keep static bounds, then enforce MAX >= MIN afterwards
+        _normalize_range_to_static_bounds("reg_min_total_range", 0, 10, step)
         reg_min_total_min, reg_min_total_max = st.slider(
             "Regular min total",
             0, 10,
             st.session_state["reg_min_total_range"],
             step=step,
-            key="reg_min_total_range",
-            on_change=_clamp_max_to_min, args=("reg_min_total_range", "reg_max_total_range")
+            key="reg_min_total_range"
         )
 
-        # REG: MAX total depends on MIN's upper handle; normalize to the dynamic lower bound.
-        dyn_min_reg_max = reg_min_total_max
-        _normalize_range("reg_max_total_range", dyn_min=dyn_min_reg_max, dyn_max=10, step=step)
+        # Ensure the MAX range respects the new MIN upper handle BEFORE rendering MAX
+        _enforce_total_dependency("reg_min_total_range", "reg_max_total_range", 0, 10, step)
         reg_max_total_min, reg_max_total_max = st.slider(
             "Regular max total",
-            dyn_min_reg_max, 10,
+            0, 10,  # <-- static bounds: no dynamic min_value
             st.session_state["reg_max_total_range"],
             step=step,
-            key="reg_max_total_range",
-            on_change=_clamp_max_to_min, args=("reg_min_total_range", "reg_max_total_range")
+            key="reg_max_total_range"
         )
 
         st.markdown("**Adcoms**")
@@ -486,27 +497,24 @@ with st.sidebar:
             help="Set the maximum per day."
         )
 
-        # SEN: MIN total first.
-        _normalize_range("sen_min_total_range", dyn_min=0, dyn_max=10, step=step)
+        # SEN: MIN total first; static bounds
+        _normalize_range_to_static_bounds("sen_min_total_range", 0, 10, step)
         sen_min_total_min, sen_min_total_max = st.slider(
             "Adcom min total",
             0, 10,
             st.session_state["sen_min_total_range"],
             step=step,
-            key="sen_min_total_range",
-            on_change=_clamp_max_to_min, args=("sen_min_total_range", "sen_max_total_range")
+            key="sen_min_total_range"
         )
 
-        # SEN: MAX total depends on MIN's upper handle.
-        dyn_min_sen_max = sen_min_total_max
-        _normalize_range("sen_max_total_range", dyn_min=dyn_min_sen_max, dyn_max=10, step=step)
+        # Enforce dependency and render MAX with static bounds
+        _enforce_total_dependency("sen_min_total_range", "sen_max_total_range", 0, 10, step)
         sen_max_total_min, sen_max_total_max = st.slider(
             "Adcom max total",
-            dyn_min_sen_max, 10,
+            0, 10,  # <-- static bounds
             st.session_state["sen_max_total_range"],
             step=step,
-            key="sen_max_total_range",
-            on_change=_clamp_max_to_min, args=("sen_min_total_range", "sen_max_total_range")
+            key="sen_max_total_range"
         )
 
         # Mirror per-field step vars so the rest of the code uses them
@@ -534,6 +542,7 @@ with st.sidebar:
         st.caption(f"Estimated scenarios: **{_est:,}**")
 
         run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
+
 
 
 # Build Settings from sidebar values
