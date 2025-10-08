@@ -359,11 +359,53 @@ def _recode_regular_to_adcom_in_workbook(
     col_adc_name = find_col(hdr_adc, adcom_name_header)  # not strictly needed but nice to have
 
     if not col_reg_name:
-        st.warning(
-            f"Re-code skipped: couldn't find interviewer column on Regular sheet. "
-            f"Headers on row {header_row_index}: {sorted(hdr_reg.keys())[:12]}"
-        )
-        return xlsx_bytes
+        # Try to auto-detect the header row within the first N rows
+        SCAN_ROWS = 25
+        max_scan_reg = min(SCAN_ROWS, ws_reg.max_row if ws_reg.max_row else 1)
+        for r in range(1, max_scan_reg + 1):
+            hdr_try = header_map(ws_reg, r)
+            col_try = find_col(hdr_try, reg_name_header)
+            if col_try:
+                hdr_reg = hdr_try
+                col_reg_name = col_try
+                header_row_index = r
+                break
+
+        # If still not found, heuristic: detect the name column by looking for the target names in cells
+        if not col_reg_name:
+            names_norm_set = set(names_norm)
+            max_rows_check = min(ws_reg.max_row or 1, (header_row_index or 1) + 200)
+            for c in range(1, ws_reg.max_column + 1):
+                hit = False
+                for r in range((header_row_index or 1) + 1, max_rows_check + 1):
+                    val = ws_reg.cell(row=r, column=c).value
+                    if val is None:
+                        continue
+                    if _norm(val) in names_norm_set:
+                        col_reg_name = c
+                        hit = True
+                        break
+                if hit:
+                    break
+
+        # Also try to auto-detect the Adcom header row if needed (for column mapping)
+        col_adc_name = find_col(hdr_adc, adcom_name_header)
+        if not col_adc_name:
+            max_scan_adc = min(SCAN_ROWS, ws_adc.max_row if ws_adc.max_row else 1)
+            for r in range(1, max_scan_adc + 1):
+                hdr_try = header_map(ws_adc, r)
+                col_try = find_col(hdr_try, adcom_name_header)
+                if col_try:
+                    hdr_adc = hdr_try
+                    col_adc_name = col_try
+                    break
+
+        if not col_reg_name:
+            st.warning(
+                f"Re-code skipped: couldn't find interviewer column on Regular sheet. "
+                f"Checked rows 1–{max_scan_reg}. Headers near provided row {header_row_index}: {sorted(hdr_reg.keys())[:12]}"
+            )
+            return xlsx_bytes
 
     # Collect rows to move
     rows_to_move = []
@@ -464,7 +506,7 @@ with st.sidebar:
         adcom_count_header = st.text_input("Adcom count header", value="Pre_Assigned_Count")
 
     # NEW: Re-code UI
-    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=True):
+    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=False):
         st.markdown(
             "If present on the Regular sheet, these interviewers will be moved to the Adcom sheet (before counts are injected)."
         )
