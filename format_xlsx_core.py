@@ -68,11 +68,14 @@ def extract_date_time_slots(
     Returns:
       - master_availability: [{Date_Time, Available_Interviewers: [names]}]
       - max_interviews_slots: [{Date_Time, Max_Pairs}]
-      - all_interviewers: sorted list of unique names
+      - all_interviewers: unique names in FIRST-APPEARANCE order (sheet → column → row)
     """
-    master_availability = []
-    max_interviews_slots = []
-    all_interviewers = set()
+    master_availability: List[Dict[str, Any]] = []
+    max_interviews_slots: List[Dict[str, Any]] = []
+
+    # Preserve first appearance across all sheets/columns/rows
+    all_interviewers: List[str] = []
+    seen_names_ci: Set[str] = set()  # case-insensitive tracker for first appearance
 
     for sheet_name in workbook.sheet_names:
         if sheet_name in EXCLUDED_SHEETS:
@@ -114,32 +117,51 @@ def extract_date_time_slots(
             # filter out excluded names (case-insensitive)
             names = [n for n in names if n.strip().lower() not in EXCLUDED_INTERVIEWER_NAMES]
 
-            all_interviewers.update(names)
+            # record first appearance order (case-insensitive)
+            for n in names:
+                key = n.strip().lower()
+                if key and key not in seen_names_ci:
+                    seen_names_ci.add(key)
+                    all_interviewers.append(n)
+
             master_availability.append(
                 {"Date_Time": date_time, "Available_Interviewers": names}
             )
 
     sort_date_time_slots(max_interviews_slots)
-    return master_availability, max_interviews_slots, sorted(all_interviewers)
+    # DO NOT sort all_interviewers; return as first-appearance order
+    return master_availability, max_interviews_slots, all_interviewers
+
 
 def create_master_df(
     all_interviewers: Iterable[str],
     max_interviews_slots: List[Dict[str, Any]],
     master_availability: List[Dict[str, Any]],
 ) -> pd.DataFrame:
-    # Safety: re-filter and sort
-    all_interviewers = sorted(
-        n for n in all_interviewers
-        if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES
-    )
+    # Re-filter + de-dup while preserving the incoming order
+    out: List[str] = []
+    seen_ci: Set[str] = set()
+    for n in all_interviewers:
+        n_str = str(n).strip()
+        if not n_str:
+            continue
+        key = n_str.lower()
+        if key in EXCLUDED_INTERVIEWER_NAMES:
+            continue
+        if key not in seen_ci:
+            seen_ci.add(key)
+            out.append(n_str)
 
     cols = [s["Date_Time"] for s in max_interviews_slots]
-    master_df = pd.DataFrame(0, index=list(all_interviewers), columns=cols, dtype="int8")
+    master_df = pd.DataFrame(0, index=out, columns=cols, dtype="int8")
     master_df.index.name = "Interviewer_Name"
 
     for entry in master_availability:
         dt = entry["Date_Time"]
-        names = [n for n in entry.get("Available_Interviewers", []) if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES]
+        names = [
+            n for n in entry.get("Available_Interviewers", [])
+            if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES
+        ]
         if not names:
             continue
         # Guard against any names not present in index (just in case)
