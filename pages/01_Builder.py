@@ -464,7 +464,7 @@ with st.sidebar:
         adcom_count_header = st.text_input("Adcom count header", value="Pre_Assigned_Count")
 
     # NEW: Re-code UI
-    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=Truee):
+    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=True):
         st.markdown(
             "If present on the Regular sheet, these interviewers will be moved to the Adcom sheet (before counts are injected)."
         )
