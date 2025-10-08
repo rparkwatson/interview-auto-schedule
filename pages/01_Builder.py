@@ -4,7 +4,8 @@ import re
 import hashlib
 import streamlit as st
 import pandas as pd
-import openpyxl  # NEW
+import openpyxl 
+from adcom_contingency import maybe_convert_adcom_excel
 
 from format_xlsx_core import parse_primary_and_adcom, build_formatted_workbook_bytes
 
@@ -275,12 +276,27 @@ if proceed_clicked and uploads_present:
         a_up = st.session_state["adcom"]
         p_bytes = p_up.getvalue() if hasattr(p_up, "getvalue") else p_up.read()
         a_bytes = a_up.getvalue() if hasattr(a_up, "getvalue") else a_up.read()
+
+        # ── MINIMAL CONTINGENCY: auto-convert Adcom if it is the matrix format ──
+        try:
+            # If you have an example workbook, pass it as io.BytesIO(example_bytes) instead of None
+            a_bytes_conv = maybe_convert_adcom_excel(
+                file_like=io.BytesIO(a_bytes),
+                example_file_like=None,   # ← optional: io.BytesIO(example_bytes)
+                default_year=2025,
+            )
+        except Exception as conv_err:
+            st.warning(f"Adcom contingency conversion skipped: {conv_err}")
+            a_bytes_conv = a_bytes
+        # ────────────────────────────────────────────────────────────────────────
+
+        # Persist the original AF bytes and the (possibly converted) Adcom bytes
         st.session_state.primary_bytes = p_bytes
-        st.session_state.adcom_bytes = a_bytes
+        st.session_state.adcom_bytes = a_bytes_conv
 
         # Fresh BytesIO for parsing
         p_bio = io.BytesIO(p_bytes)
-        a_bio = io.BytesIO(a_bytes)
+        a_bio = io.BytesIO(a_bytes_conv)
 
         master_df, max_df, adcom_df = parse_primary_and_adcom(
             p_bio, a_bio, header_row
@@ -299,8 +315,16 @@ if proceed_clicked and uploads_present:
         st.session_state.reg_name_col = _guess_name_column(master_df)
         st.session_state.adcom_name_col = _guess_name_column(adcom_df)
 
-        reg_names = master_df[st.session_state.reg_name_col] if st.session_state.reg_name_col in master_df.columns else pd.Series([], dtype=str)
-        adcom_names = adcom_df[st.session_state.adcom_name_col] if st.session_state.adcom_name_col in adcom_df.columns else pd.Series([], dtype=str)
+        reg_names = (
+            master_df[st.session_state.reg_name_col]
+            if st.session_state.reg_name_col in master_df.columns
+            else pd.Series([], dtype=str)
+        )
+        adcom_names = (
+            adcom_df[st.session_state.adcom_name_col]
+            if st.session_state.adcom_name_col in adcom_df.columns
+            else pd.Series([], dtype=str)
+        )
         st.session_state.reg_pre_df = _build_pre_table_from_names(reg_names)
         st.session_state.adcom_pre_df = _build_pre_table_from_names(adcom_names)
 
@@ -312,6 +336,7 @@ if proceed_clicked and uploads_present:
     except Exception as e:
         st.session_state.proceeded = False
         st.error(f"Parse failed: {e}")
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Summary dashboard (after Proceed)
