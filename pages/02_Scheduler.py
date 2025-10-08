@@ -44,6 +44,33 @@ def _build_range(lo: int, hi: int, step: int) -> list[int]:
         lo, hi = hi, lo
     return list(range(lo, hi + 1, step))
 
+# --- Bootstrap scheduler defaults BEFORE any widget/range init ---
+def _seed_default(key: str, value: int):
+    if key not in st.session_state:
+        st.session_state[key] = int(value)
+
+# Canonical scheduler defaults (adjust if you prefer different starting values)
+_seed_default("reg_max_daily", 2)
+_seed_default("reg_min_total", 5)
+_seed_default("reg_max_total", 7)
+
+_seed_default("sen_max_daily", 2)
+_seed_default("sen_min_total", 0)
+_seed_default("sen_max_total", 5)
+
+# Keep min ≤ max for both groups (pre-clamp on each rerun)
+def _clamp_pair(min_key: str, max_key: str, lo: int, hi: int):
+    a = int(max(lo, min(hi, st.session_state[min_key])))
+    b = int(max(lo, min(hi, st.session_state[max_key])))
+    if a > b:
+        a = b
+    st.session_state[min_key] = a
+    st.session_state[max_key] = b
+
+_clamp_pair("reg_min_total", "reg_max_total", 0, 999)
+_clamp_pair("sen_min_total", "sen_max_total", 0, 999)
+
+
 def _init_range_state(state_key: str, min_v: int, max_v: int, seed: int, width: int, step: int):
     """
     Initialize st.session_state[state_key] to a wider (lo, hi) range centered on seed.
@@ -363,10 +390,10 @@ with st.sidebar:
         w_total = 10
 
         # Initialize totals ranges once (no-op if keys already set)
-        _init_range_state("reg_max_total_range", 0, 10, int(reg_max_total), width=w_total, step=int(granularity))
-        _init_range_state("reg_min_total_range", 0, 10, int(reg_min_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_max_total_range", 0, 10, int(sen_max_total), width=w_total, step=int(granularity))
-        _init_range_state("sen_min_total_range", 0, 10, int(sen_min_total), width=w_total, step=int(granularity))
+        _init_range_state("reg_max_total_range", 0, 10, int(st.session_state["reg_max_total"]), width=w_total, step=int(granularity))
+        _init_range_state("reg_min_total_range", 0, 10, int(st.session_state["reg_min_total"]), width=w_total, step=int(granularity))
+        _init_range_state("sen_max_total_range", 0, 10, int(st.session_state["reg_max_total"]), width=w_total, step=int(granularity))
+        _init_range_state("sen_min_total_range", 0, 10, int(st.session_state["reg_min_total"]), width=w_total, step=int(granularity))
 
         # Initialize single-value per-day max sliders (keep in session)
         if "reg_max_daily" not in st.session_state:
