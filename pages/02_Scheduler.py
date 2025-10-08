@@ -374,7 +374,7 @@ with st.sidebar:
             year = st.number_input("Calendar year", 2000, 2100, 2025, key="year", on_change=_mark_dirty, disabled=True)
             slot_minutes = st.number_input("Slot length (minutes)", 5, 240, 120, key="slot_minutes", on_change=_mark_dirty, disabled=True)
 
-# 3) Auto-scan Defaults (SLIDER-BASED with wider first-run defaults)
+    # 3) Auto-scan Defaults (SLIDER-BASED with wider first-run defaults)
     with st.expander("Auto-scan defaults (experimental)", expanded=False):
         st.caption(
             "Pick ranges (inclusive). The solver will try every combination and rank by "
@@ -412,44 +412,45 @@ with st.sidebar:
         def _snap_down(x: int, step: int) -> int:
             return (int(x) // step) * step
 
-        def _normalize_range_to_static_bounds(key: str, lo_bound: int = 0, hi_bound: int = 10, step: int = 1):
-            """Clamp (lo,hi) to [lo_bound,hi_bound] and snap both ends to the step grid with origin at 0."""
-            lo, hi = st.session_state[key]
+        def _clamp_snap_pair(lo, hi, lo_bound=0, hi_bound=10, step=1):
             lo = max(lo_bound, min(hi_bound, int(lo)))
             hi = max(lo_bound, min(hi_bound, int(hi)))
             lo = _snap_up(lo, step)
             hi = _snap_down(hi, step)
             if hi < lo:
                 hi = lo
-            lo = max(lo_bound, min(hi_bound, lo))
-            hi = max(lo_bound, min(hi_bound, hi))
+            return lo, hi
+
+        def _normalize_range_to_static_bounds(key: str, lo_bound: int = 0, hi_bound: int = 10, step: int = 1):
+            """Pre-render: clamp (lo,hi) to [lo_bound,hi_bound] and snap both ends to the step grid with origin at 0."""
+            lo, hi = st.session_state[key]
+            lo, hi = _clamp_snap_pair(lo, hi, lo_bound, hi_bound, step)
             st.session_state[key] = (lo, hi)
 
         def _enforce_total_dependency(min_key: str, max_key: str, lo_bound: int = 0, hi_bound: int = 10, step: int = 1):
             """
-            Ensure lower handle of MAX >= upper handle of MIN, then snap & clamp to static bounds.
-            This avoids dynamic slider bounds (no changing min_value on the MAX slider).
+            Ensure lower handle of MAX >= upper handle of MIN using the current MIN value.
+            IMPORTANT: Do NOT mutate MIN here (its slider may already be rendered). Only update MAX.
             """
+            # READ current MIN safely and normalize locally (no write)
             min_lo, min_hi = st.session_state[min_key]
-            max_lo, max_hi = st.session_state[max_key]
+            min_lo, min_hi = _clamp_snap_pair(min_lo, min_hi, lo_bound, hi_bound, step)
 
-            # First normalize both ranges to the static [0,10] grid
-            _normalize_range_to_static_bounds(min_key, lo_bound, hi_bound, step)
-            _normalize_range_to_static_bounds(max_key, lo_bound, hi_bound, step)
-
-            # Re-read after normalization
-            _, min_hi = st.session_state[min_key]
-            max_lo, max_hi = st.session_state[max_key]
+            # Get current MAX (or default span if unset), normalize locally
+            if max_key in st.session_state:
+                max_lo, max_hi = st.session_state[max_key]
+            else:
+                max_lo, max_hi = (lo_bound, hi_bound)
+            max_lo, max_hi = _clamp_snap_pair(max_lo, max_hi, lo_bound, hi_bound, step)
 
             # Enforce dependency: max.lower >= min.upper
             new_lo = max(max_lo, min_hi)
             new_lo = _snap_up(new_lo, step)
             new_hi = max(max_hi, new_lo)
             new_hi = _snap_down(new_hi, step)
+            new_lo, new_hi = _clamp_snap_pair(new_lo, new_hi, lo_bound, hi_bound, step)
 
-            # Final clamp
-            new_lo = max(lo_bound, min(hi_bound, new_lo))
-            new_hi = max(lo_bound, min(hi_bound, new_hi))
+            # SAFE WRITE: only to MAX (whose slider hasn't been rendered yet)
             st.session_state[max_key] = (new_lo, new_hi)
 
         # ---------- Render sliders ----------
@@ -543,8 +544,6 @@ with st.sidebar:
 
         run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
-
-
 # Build Settings from sidebar values
 cfg = Settings(
     time_limit_s=float(time_limit),
@@ -620,12 +619,12 @@ try:
     inputs = read_inputs_from_legacy(
         up, year=int(year), slot_minutes=int(slot_minutes),
         defaults={
-            "reg_max_daily": int(reg_max_daily),
-            "reg_max_total": int(reg_max_total),
-            "reg_min_total": int(reg_min_total),
-            "senior_max_daily": int(sen_max_daily),
-            "senior_max_total": int(sen_max_total),
-            "senior_min_total": int(sen_min_total),
+            "reg_max_daily": int(reg_max_daily_val if 'reg_max_daily_val' in locals() else st.session_state["reg_max_daily"]),
+            "reg_max_total": int(st.session_state.get("reg_max_total", 7)),
+            "reg_min_total": int(st.session_state.get("reg_min_total", 5)),
+            "senior_max_daily": int(sen_max_daily_val if 'sen_max_daily_val' in locals() else st.session_state["sen_max_daily"]),
+            "senior_max_total": int(st.session_state.get("sen_max_total", 5)),
+            "senior_min_total": int(st.session_state.get("sen_min_total", 0)),
         }
     )
 except Exception as e:
@@ -705,12 +704,13 @@ with st.expander("Summary Tables", expanded=False):
 #  Auto-scan (grid search)
 # =========================
 if run_autoscan:
-    # Build grids from ranges
-    reg_max_daily_grid = _build_range(reg_max_daily_min, reg_max_daily_max, reg_max_daily_step)
+    # Per-day choices are single-value grids
+    reg_max_daily_grid = [int(reg_max_daily_val)]
+    sen_max_daily_grid = [int(sen_max_daily_val)]
+
+    # Ranges from the range sliders
     reg_max_total_grid = _build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)
     reg_min_total_grid = _build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)
-
-    sen_max_daily_grid = _build_range(sen_max_daily_min, sen_max_daily_max, sen_max_daily_step)
     sen_max_total_grid = _build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)
     sen_min_total_grid = _build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step)
 
@@ -1125,12 +1125,12 @@ if run_clicked:
         "pct": pct_filled,
         # Store default limits used for this run
         "defaults": {
-            "reg_max_daily": int(reg_max_daily),
-            "reg_max_total": int(reg_max_total),
-            "reg_min_total": int(reg_min_total),
-            "sen_max_daily": int(sen_max_daily),
-            "sen_max_total": int(sen_max_total),
-            "sen_min_total": int(sen_min_total),
+            "reg_max_daily": int(st.session_state.get("reg_max_daily", reg_max_daily_val)),
+            "reg_max_total": int(st.session_state.get("reg_max_total", 7)),
+            "reg_min_total": int(st.session_state.get("reg_min_total", 5)),
+            "sen_max_daily": int(st.session_state.get("sen_max_daily", sen_max_daily_val)),
+            "sen_max_total": int(st.session_state.get("sen_max_total", 5)),
+            "sen_min_total": int(st.session_state.get("sen_min_total", 0)),
         }
     })
     st.session_state.run_history = st.session_state.run_history[-50:]  # keep last 50
