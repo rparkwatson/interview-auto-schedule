@@ -104,7 +104,8 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
     """
     Prepare a DataFrame for st.dataframe() to avoid Arrow/casting errors.
     - Coerces numeric columns
-    - Uses Int64 only when values are truly integer-like; otherwise keeps float64
+    - Uses Int64 only when values are truly integer-like and within int64 bounds
+    - Falls back to float if values exceed int64 bounds
     - Replaces ±inf with NaN
     - Optionally limits to top `max_rows`
     - Truncates long Status cells
@@ -117,13 +118,20 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
     if max_rows is not None and len(safe) > max_rows:
         safe = safe.head(max_rows)
 
+    # NEW: add all the integer-ish columns used across the app
     INT_CANDIDATES = [
         "Scenario #", "Rooms Filled", "Reg Pairs", "Capacity",
-        "reg_max/day", "reg_max_total", "reg_min_total",
-        "adcom_max/day", "adcom_max_total", "adcom_min_total",
-        "Run #", "Filled",  # include history columns just in case
+        "Filled", "Run #",
+        # NEW important ones:
+        "Rooms Used", "Used_Rooms", "Unused_Rooms",
     ]
-    FLOAT_COLS = ["Percent Filled", "Objective", "Pct of Capacity (%)", "Share of Used (%)"]
+
+    FLOAT_COLS = [
+        "Percent Filled", "Objective", "Pct of Capacity (%)",
+        "Share of Used (%)",
+        # NEW: appears in the slot summary
+        "Unused_%"
+    ]
 
     # Normalize floats
     for c in FLOAT_COLS:
@@ -132,30 +140,41 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
             s = s.replace([np.inf, -np.inf], np.nan)
             safe[c] = s
 
-    # Helper: treat as integer-like only if every non-null value is within epsilon of an integer
-    def _int_like(series: pd.Series) -> bool:
-        v = pd.to_numeric(series, errors="coerce")
-        v = v[~v.isna()].astype(float)
-        if v.empty:
-            return True
-        return np.isfinite(v).all() and np.isclose(v % 1, 0).all()
+    MAX_I64 = np.iinfo(np.int64).max
 
-    # Integer candidates: only cast to Int64 when truly safe; otherwise keep as float
+    def _is_int_like(v: pd.Series) -> bool:
+        vv = pd.to_numeric(v, errors="coerce")
+        vv = vv[~vv.isna()].astype(float)
+        if vv.empty:
+            return True
+        return np.isfinite(vv).all() and np.isclose(vv % 1, 0).all()
+
+    def _coerce_int_column(series: pd.Series) -> pd.Series:
+        v = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
+        # If any value exceeds int64 bounds, fall back to float to avoid Arrow overflow
+        try:
+            max_abs = v.dropna().abs().max()
+        except Exception:
+            max_abs = None
+        if max_abs is not None and max_abs > MAX_I64:
+            return v.astype(float)
+        # Otherwise, keep integer semantics if truly integral
+        if _is_int_like(v):
+            try:
+                return v.astype("Int64")  # nullable int
+            except Exception:
+                return v.astype(float)
+        return v.astype(float)
+
     for c in INT_CANDIDATES:
         if c in safe.columns:
-            vals = pd.to_numeric(safe[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
-            if _int_like(vals):
-                try:
-                    safe[c] = vals.astype("Int64")  # no rounding; cast only if integral already
-                except TypeError:
-                    safe[c] = vals.astype(float)
-            else:
-                safe[c] = vals.astype(float)
+            safe[c] = _coerce_int_column(safe[c])
 
     if "Status" in safe.columns:
         safe["Status"] = safe["Status"].astype(str).str.slice(0, 240)
 
     return safe
+
 
 def _to_int_or_none(x):
     try:
