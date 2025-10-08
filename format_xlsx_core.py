@@ -14,13 +14,15 @@ TIME_SLOTS_ORDER = ["8AM", "1030AM", "1PM", "330PM", "6PM"]
 # Sheets to ignore
 EXCLUDED_SHEETS = {"AF Names", "IGNORE Robin", "CHECK OFF WHEN DONE", "EXAMPLE"}
 
-EXCLUDED_INTERVIEWER_NAMES = {"aaaaa"}
+# Normalize excluded names to lowercase once
+EXCLUDED_INTERVIEWER_NAMES = {n.strip().lower() for n in {"aaaaa"}}
 
 # ------------------------------- Helpers --------------------------------------
 def load_workbook_from_filelike(file_like) -> pd.ExcelFile:
     """Accepts bytes or a file-like and returns a Pandas ExcelFile."""
+    if isinstance(file_like, (bytes, bytearray)):
+        file_like = io.BytesIO(file_like)
     return pd.ExcelFile(file_like)
-
 
 def format_sheet_time(sheet_name: str) -> str:
     raw = re.sub(r"[\s:]", "", sheet_name).upper()
@@ -33,17 +35,14 @@ def format_sheet_time(sheet_name: str) -> str:
     }
     return time_map.get(raw, raw)
 
-
 def extract_date(col_name: str) -> str:
     match = re.search(r"\((.*?)\)", col_name)
     if not match:
         raise ValueError(f"Date not found in column name: {col_name}")
     return match.group(1).strip()
 
-
 def sort_date_time_slots(slots: List[Dict[str, Any]]) -> None:
     """Sorts in-place by (month, day, TIME_SLOTS_ORDER index)."""
-
     def key_fn(row: Dict[str, Any]):
         dt = row["Date_Time"]
         parts = dt.split("-", 1)
@@ -59,9 +58,7 @@ def sort_date_time_slots(slots: List[Dict[str, Any]]) -> None:
         except ValueError:
             i = len(TIME_SLOTS_ORDER)
         return (month, day, i)
-
     slots.sort(key=key_fn)
-
 
 # -------------------------- Core transformation --------------------------------
 def extract_date_time_slots(
@@ -106,9 +103,15 @@ def extract_date_time_slots(
             max_interviews_slots.append({"Date_Time": date_time, "Max_Pairs": None})
 
             names = (
-                sheet[date_col].dropna().astype(str).str.strip().str.title().tolist()
+                sheet[date_col]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.title()
+                .tolist()
             )
 
+            # filter out excluded names (case-insensitive)
             names = [n for n in names if n.strip().lower() not in EXCLUDED_INTERVIEWER_NAMES]
 
             all_interviewers.update(names)
@@ -119,31 +122,34 @@ def extract_date_time_slots(
     sort_date_time_slots(max_interviews_slots)
     return master_availability, max_interviews_slots, sorted(all_interviewers)
 
-
 def create_master_df(
     all_interviewers: Iterable[str],
     max_interviews_slots: List[Dict[str, Any]],
     master_availability: List[Dict[str, Any]],
 ) -> pd.DataFrame:
-    all_interviewers = [
+    # Safety: re-filter and sort
+    all_interviewers = sorted(
         n for n in all_interviewers
         if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES
-    ]
-    
+    )
+
     cols = [s["Date_Time"] for s in max_interviews_slots]
     master_df = pd.DataFrame(0, index=list(all_interviewers), columns=cols, dtype="int8")
     master_df.index.name = "Interviewer_Name"
 
     for entry in master_availability:
         dt = entry["Date_Time"]
-        names = entry["Available_Interviewers"]
-        if names:
-            master_df.loc[names, dt] = 1
+        names = [n for n in entry.get("Available_Interviewers", []) if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES]
+        if not names:
+            continue
+        # Guard against any names not present in index (just in case)
+        valid = [n for n in names if n in master_df.index]
+        if valid:
+            master_df.loc[valid, dt] = 1
 
     master_df = master_df.reset_index()
     master_df.insert(1, "Pre_Assigned_Count", 0)
     return master_df
-
 
 def create_program_info_df() -> pd.DataFrame:
     return pd.DataFrame(
@@ -158,15 +164,13 @@ def create_program_info_df() -> pd.DataFrame:
         ]
     )
 
-
 def validate_data(master_df: pd.DataFrame, max_df: pd.DataFrame, adcom_df: pd.DataFrame) -> None:
     if master_df.isnull().values.any():
         logging.warning("Master Availability contains nulls.")
-    if "Max_Pairs" in max_df and max_df["Max_Pairs"].isnull().any():
+    if "Max_Pairs" in max_df.columns and max_df["Max_Pairs"].isnull().any():
         logging.warning("Some Max_Pairs values are not set.")
     if adcom_df.isnull().values.any():
         logging.warning("Adcom Availability contains nulls.")
-
 
 def _export_to_excel_bytes(
     program_info_df: pd.DataFrame,
@@ -201,7 +205,6 @@ def _export_to_excel_bytes(
 
     return out.getvalue()
 
-
 # --------------------------- Public entry points --------------------------------
 def parse_primary_and_adcom(
     primary_file_like, adcom_file_like, header_row: int = 3
@@ -222,7 +225,6 @@ def parse_primary_and_adcom(
 
     return master_df, max_df, adcom_df
 
-
 def build_formatted_workbook_bytes(
     primary_file_like,
     adcom_file_like,
@@ -235,10 +237,14 @@ def build_formatted_workbook_bytes(
     """
     master_df, max_df, adcom_df = parse_primary_and_adcom(primary_file_like, adcom_file_like, header_row)
 
-    # Ensure Max_Pairs exists (fill None -> 0 so Streamlit editor is friendly)
+    # Ensure Max_Pairs exists and is clean integer without downcast warnings
     if "Max_Pairs" not in max_df.columns:
         max_df["Max_Pairs"] = 0
-    max_df["Max_Pairs"] = max_df["Max_Pairs"].fillna(0).astype(int)
+    max_df["Max_Pairs"] = (
+        pd.to_numeric(max_df["Max_Pairs"], errors="coerce")
+          .fillna(0)
+          .astype("int64")
+    )
 
     # Apply any per-slot overrides
     if max_pairs_overrides:
