@@ -174,8 +174,6 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
 
     return safe
 
-
-
 def _to_int_or_none(x):
     try:
         return int(x) if pd.notna(x) else None
@@ -204,12 +202,15 @@ st.markdown(
         5. Iterate. You can run the scheduler multiple times, changing group constraints as needed.
 
         6. Compare results. The result for each run is saved in **Scheduler Results** section.
-    """)
+    """
+)
 
 if "needs_rerun" not in st.session_state:
     st.session_state["needs_rerun"] = False
 if "last_results" not in st.session_state:
     st.session_state["last_results"] = None
+if "run_history" not in st.session_state:
+    st.session_state.run_history = []
 
 # ---------------------------
 # Sidebar (collapsible groups)
@@ -233,6 +234,14 @@ with st.sidebar:
         b2b_mode = st.selectbox("Back-to-back", ["soft", "hard", "off"], index=0, key="b2b_mode", on_change=_mark_dirty)
         observer_extra = st.number_input("Observer extra per slot", 0, 10, 0, key="observer_extra", on_change=_mark_dirty, disabled=True)
         adjacency_grace = st.number_input("Adjacency grace (min)", 0, 30, 0, key="adjacency_grace", on_change=_mark_dirty, disabled=True)
+
+        # NEW: randomness control for de-biasing ties/seed order
+        random_seed_input = st.number_input(
+            "Random seed (0 = fixed jitter)",
+            min_value=0, max_value=1_000_000, value=int(st.session_state.get("random_seed", 0)),
+            key="random_seed",
+            on_change=_mark_dirty,
+        )
 
         with st.expander("Objective Weights", expanded=False):
             w_pairs = st.number_input("Weight: pairs", 1000, 5_000_000, 1_000_000, step=1000, key="w_pairs", on_change=_mark_dirty, disabled=True)
@@ -342,7 +351,7 @@ cfg = Settings(
     adjacency_grace_min=int(adjacency_grace),
     scarcity_bonus=int(scarcity_bonus),
     w_fill_adcom=int(w_fill_adcom),
-    random_seed=int(random_seed),              # ← add
+    random_seed=int(st.session_state.get("random_seed", 0)),  # ← safe access
 )
 if day_caps_text.strip():
     try:
@@ -384,7 +393,6 @@ else:
         if st.session_state.get("needs_rerun") and st.session_state.get("last_results"):
             st.info("Settings changed since last run. Upload a workbook and re-run the scheduler.")
         st.stop()
-
 
 # Detect legacy format
 try:
@@ -572,7 +580,7 @@ if run_autoscan:
             scarcity_bonus=cfg.scarcity_bonus,
             w_fill_adcom=cfg.w_fill_adcom,
             day_caps=getattr(cfg, "day_caps", None),
-            random_seed=getattr(cfg, "random_seed", 0), 
+            random_seed=int(st.session_state.get("random_seed", 0)),
         )
 
         # Seed + solve
@@ -611,7 +619,6 @@ if run_autoscan:
             res_i["pairs"] = {}
             res_i["adcom_singles"] = {}
 
-
         row = {
             "Scenario #": idx,
             "Status": status,
@@ -622,7 +629,7 @@ if run_autoscan:
             "Objective": (None if objective is None or not np.isfinite(objective) else round(float(objective), 0)),
             "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
             "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
-}
+        }
         results_rows.append(row)
 
         # Track best (lexicographic: Percent Filled, reg_pairs, objective)
@@ -783,7 +790,7 @@ run_clicked = st.button("Run scheduler", type="primary")
 
 if run_clicked:
     with st.spinner("Solving with CP-SAT…"):
-        hint = greedy_seed(inputs, seed=getattr(cfg, "random_seed", 0)) 
+        hint = greedy_seed(inputs, seed=getattr(cfg, "random_seed", 0))
         res = solve_weighted(inputs, cfg, hint=hint)
     st.session_state["last_results"] = {"res": res, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     st.session_state["needs_rerun"] = False
@@ -903,9 +910,6 @@ with st.expander("Regular vs Adcom Assignments"):
     st.dataframe(_arrow_safe_scan_df(df_group), width='stretch')
 
 # Persist run history with DEFAULT LIMITS snapshot
-if "run_history" not in st.session_state:
-    st.session_state.run_history = []
-
 if run_clicked:
     ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.session_state.run_history.append({
@@ -968,7 +972,10 @@ if st.session_state.run_history:
         df_hist = df_hist.sort_values("Timestamp_dt", ascending=False).drop(columns=["Timestamp_dt"])
     except Exception:
         df_hist = df_hist.sort_values("Run #", ascending=False)
-    
+else:
+    # ensure df_hist exists before plotting
+    df_hist = pd.DataFrame(columns=["Run #", "Timestamp", "Filled", "Capacity", "Percent Filled"])
+
 st.markdown("### Scheduler Results")
 
 # --- Prep tidy run-history data ---
