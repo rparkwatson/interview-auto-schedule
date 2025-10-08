@@ -342,6 +342,7 @@ cfg = Settings(
     adjacency_grace_min=int(adjacency_grace),
     scarcity_bonus=int(scarcity_bonus),
     w_fill_adcom=int(w_fill_adcom),
+    random_seed=int(random_seed),              # ← add
 )
 if day_caps_text.strip():
     try:
@@ -571,11 +572,12 @@ if run_autoscan:
             scarcity_bonus=cfg.scarcity_bonus,
             w_fill_adcom=cfg.w_fill_adcom,
             day_caps=getattr(cfg, "day_caps", None),
+            random_seed=getattr(cfg, "random_seed", 0), 
         )
 
         # Seed + solve
         try:
-            hint_i = greedy_seed(inputs_i)
+            hint_i = greedy_seed(inputs_i, seed=getattr(cfg_scan, "random_seed", 0))
             res_i = solve_weighted(inputs_i, cfg_scan, hint=hint_i)
         except Exception as e:
             results_rows.append({
@@ -751,7 +753,7 @@ if run_autoscan:
                         )
 
                         with st.spinner(f"Running scheduler for scenario #{scn_id}…"):
-                            hint_run = greedy_seed(inputs_run)
+                            hint_run = greedy_seed(inputs_run, seed=getattr(cfg, "random_seed", 0))
                             res_run = solve_weighted(inputs_run, cfg, hint=hint_run)
 
                         st.session_state["last_results"] = {"res": res_run, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -781,7 +783,7 @@ run_clicked = st.button("Run scheduler", type="primary")
 
 if run_clicked:
     with st.spinner("Solving with CP-SAT…"):
-        hint = greedy_seed(inputs)
+        hint = greedy_seed(inputs, seed=getattr(cfg, "random_seed", 0)) 
         res = solve_weighted(inputs, cfg, hint=hint)
     st.session_state["last_results"] = {"res": res, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     st.session_state["needs_rerun"] = False
