@@ -278,13 +278,16 @@ def _recode_pre_tables(
         adcom_df = pd.concat([adcom_df, to_move], ignore_index=True)
 
     # Remove from Regular
-    reg_df = reg_df[
-        ~reg_df["Interviewer"].astype(str)
+    reg_df = reg_df[~reg_df["Interviewer"].astype(str)
         .str.strip()
         .str.lower()
         .str.replace(r"\s+", " ", regex=True)
         .isin(names_norm)
     ].copy()
+
+    # Drop helper column if present before returning
+    reg_df = reg_df.drop(columns=["_k"], errors="ignore")
+    adcom_df = adcom_df.drop(columns=["_k"], errors="ignore")
 
     return reg_df, adcom_df
 
@@ -751,14 +754,16 @@ if "master_df" in st.session_state and "adcom_df" in st.session_state:
             reg_fill = st.number_input("Set all (Regular)", min_value=0, max_value=999, value=0, key="reg_fill_val")
             if st.button("Apply to all (Regular)"):
                 st.session_state.reg_pre_df["Pre_Assigned_Count"] = int(reg_fill)
+        display_reg_df = st.session_state.reg_pre_df.drop(columns=["_k"], errors="ignore")
         st.session_state.reg_pre_df = st.data_editor(
-            st.session_state.reg_pre_df,
+            display_reg_df,
             hide_index=True,
             num_rows="dynamic",
             column_config={
                 "Interviewer": st.column_config.TextColumn(disabled=True),
                 "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
             },
+            column_order=["Interviewer", "Pre_Assigned_Count"],
             key="reg_pre_editor",
             width='stretch',
         )
@@ -770,14 +775,16 @@ if "master_df" in st.session_state and "adcom_df" in st.session_state:
             adcom_fill = st.number_input("Set all (Adcom)", min_value=0, max_value=999, value=0, key="adcom_fill_val")
             if st.button("Apply to all (Adcom)"):
                 st.session_state.adcom_pre_df["Pre_Assigned_Count"] = int(adcom_fill)
+        display_adcom_df = st.session_state.adcom_pre_df.drop(columns=["_k"], errors="ignore")
         st.session_state.adcom_pre_df = st.data_editor(
-            st.session_state.adcom_pre_df,
+            display_adcom_df,
             hide_index=True,
             num_rows="dynamic",
             column_config={
                 "Interviewer": st.column_config.TextColumn(disabled=True),
                 "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
             },
+            column_order=["Interviewer", "Pre_Assigned_Count"],
             key="adcom_pre_editor",
             width='stretch',
         )

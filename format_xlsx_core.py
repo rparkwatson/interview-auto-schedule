@@ -14,6 +14,7 @@ TIME_SLOTS_ORDER = ["8AM", "1030AM", "1PM", "330PM", "6PM"]
 # Sheets to ignore
 EXCLUDED_SHEETS = {"AF Names", "IGNORE Robin", "CHECK OFF WHEN DONE", "EXAMPLE"}
 
+EXCLUDED_INTERVIEWER_NAMES = {"aaaaa"}
 
 # ------------------------------- Helpers --------------------------------------
 def load_workbook_from_filelike(file_like) -> pd.ExcelFile:
@@ -107,6 +108,9 @@ def extract_date_time_slots(
             names = (
                 sheet[date_col].dropna().astype(str).str.strip().str.title().tolist()
             )
+
+            names = [n for n in names if n.strip().lower() not in EXCLUDED_INTERVIEWER_NAMES]
+
             all_interviewers.update(names)
             master_availability.append(
                 {"Date_Time": date_time, "Available_Interviewers": names}
@@ -121,6 +125,11 @@ def create_master_df(
     max_interviews_slots: List[Dict[str, Any]],
     master_availability: List[Dict[str, Any]],
 ) -> pd.DataFrame:
+    all_interviewers = [
+        n for n in all_interviewers
+        if str(n).strip().lower() not in EXCLUDED_INTERVIEWER_NAMES
+    ]
+    
     cols = [s["Date_Time"] for s in max_interviews_slots]
     master_df = pd.DataFrame(0, index=list(all_interviewers), columns=cols, dtype="int8")
     master_df.index.name = "Interviewer_Name"
