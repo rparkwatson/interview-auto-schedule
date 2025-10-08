@@ -583,9 +583,18 @@ if proceed_clicked and uploads_present:
 
         master_df, max_df, adcom_df = parse_primary_and_adcom(p_bio, a_bio, header_row)
 
+        # Ensure column exists
         if "Max_Pairs" not in max_df.columns:
             max_df["Max_Pairs"] = 0
-        max_df["Max_Pairs"] = max_df["Max_Pairs"].fillna(0).astype(int)
+
+        # Coerce → fill → cast (no silent downcast)
+        max_df["Max_Pairs"] = (
+            pd.to_numeric(max_df["Max_Pairs"], errors="coerce")
+            .fillna(0)
+            .clip(lower=0)   # optional: prevent negatives
+            .astype("int64") # or "Int64" if you want nullable ints elsewhere
+        )
+
 
         # Persist
         st.session_state.master_df = master_df
