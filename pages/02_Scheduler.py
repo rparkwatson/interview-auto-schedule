@@ -220,99 +220,98 @@ with st.sidebar:
     with st.expander("Scheduler Limits", expanded=True):
         st.markdown("**Select Group Constraints**")
 
-        # --- Utilities ---
+        # --- helpers ---
         def _seed(key: str, default: int):
             if key not in st.session_state:
                 st.session_state[key] = int(default)
 
-        def _bootstrap_pair(min_key: str, max_key: str, lo: int, hi: int):
-            """Clamp both to [lo,hi] and ensure min <= max BEFORE widgets render."""
+        def _clamp_pair(min_key: str, max_key: str, lo: int, hi: int):
             st.session_state[min_key] = int(max(lo, min(hi, st.session_state[min_key])))
             st.session_state[max_key] = int(max(lo, min(hi, st.session_state[max_key])))
             if st.session_state[min_key] > st.session_state[max_key]:
-                # Bring MIN down to MAX to avoid ValueAboveMax/BelowMin on render.
                 st.session_state[min_key] = st.session_state[max_key]
 
-        def _enforce_after_edit(min_key: str, max_key: str, edited: str):
-            """Keep invariant after user edits; adjusts the opposite field."""
-            min_v = int(st.session_state[min_key])
-            max_v = int(st.session_state[max_key])
-            if edited == "min" and min_v > max_v:
-                st.session_state[max_key] = min_v
-            elif edited == "max" and max_v < min_v:
-                st.session_state[min_key] = max_v
+        def _sync_simple(ui_key: str, canonical_key: str):
+            st.session_state[canonical_key] = int(st.session_state[ui_key])
             _mark_dirty()
 
-        # --- Seed defaults once (use existing values if present) ---
-        _seed("reg_max_daily", 2)
-        _seed("reg_max_total", 7)
-        _seed("reg_min_total", 5)
-        _seed("sen_max_daily", 2)
-        _seed("sen_max_total", 5)
-        _seed("sen_min_total", 0)
+        def _sync_min(ui_key: str, min_key: str, max_key: str):
+            st.session_state[min_key] = int(st.session_state[ui_key])
+            if st.session_state[min_key] > st.session_state[max_key]:
+                st.session_state[max_key] = st.session_state[min_key]
+            _mark_dirty()
 
-        # --- Pre-clamp pairs on every rerun BEFORE rendering widgets ---
-        _bootstrap_pair("reg_min_total", "reg_max_total", 0, 999)
-        _bootstrap_pair("sen_min_total", "sen_max_total", 0, 999)
+        def _sync_max(ui_key: str, min_key: str, max_key: str):
+            st.session_state[max_key] = int(st.session_state[ui_key])
+            if st.session_state[max_key] < st.session_state[min_key]:
+                st.session_state[min_key] = st.session_state[max_key]
+            _mark_dirty()
+
+        # --- canonical state (shared with main content) ---
+        _seed("reg_max_daily", 2)
+        _seed("reg_min_total", 5)
+        _seed("reg_max_total", 7)
+        _seed("sen_max_daily", 2)
+        _seed("sen_min_total", 0)
+        _seed("sen_max_total", 5)
+
+        # clamp canonical pairs before rendering UI (prevents ValueAboveMax errors)
+        _clamp_pair("reg_min_total", "reg_max_total", 0, 999)
+        _clamp_pair("sen_min_total", "sen_max_total", 0, 999)
 
         # --- Regulars ---
-        reg_max_daily = st.number_input(
+        st.number_input(
             "Regular MAX per day",
             min_value=0, max_value=24,
-            value=st.session_state["reg_max_daily"],
-            key="reg_max_daily",
-            on_change=_mark_dirty
+            value=int(st.session_state["reg_max_daily"]),
+            key="reg_max_daily_ui",  # unique key
+            on_change=_sync_simple, args=("reg_max_daily_ui", "reg_max_daily")
         )
 
-        reg_min_total = st.number_input(
+        st.number_input(
             "Regular MIN total",
             min_value=0,
-            max_value=st.session_state["reg_max_total"],         # dynamic upper bound
-            value=st.session_state["reg_min_total"],             # already clamped
-            key="reg_min_total",
-            on_change=_enforce_after_edit,
-            args=("reg_min_total", "reg_max_total", "min")
+            max_value=int(st.session_state["reg_max_total"]),
+            value=int(st.session_state["reg_min_total"]),
+            key="reg_min_total_ui",  # unique key
+            on_change=_sync_min, args=("reg_min_total_ui", "reg_min_total", "reg_max_total")
         )
 
-        reg_max_total = st.number_input(
+        st.number_input(
             "Regular MAX total",
-            min_value=st.session_state["reg_min_total"],         # dynamic lower bound
+            min_value=int(st.session_state["reg_min_total"]),
             max_value=999,
-            value=st.session_state["reg_max_total"],             # already clamped
-            key="reg_max_total",
-            on_change=_enforce_after_edit,
-            args=("reg_min_total", "reg_max_total", "max")
+            value=int(st.session_state["reg_max_total"]),
+            key="reg_max_total_ui",  # unique key
+            on_change=_sync_max, args=("reg_max_total_ui", "reg_min_total", "reg_max_total")
         )
 
         # --- Adcoms ---
-        sen_max_daily = st.number_input(
+        st.number_input(
             "Adcom MAX per day",
             min_value=0, max_value=24,
-            value=st.session_state["sen_max_daily"],
-            key="sen_max_daily",
-            on_change=_mark_dirty
+            value=int(st.session_state["sen_max_daily"]),
+            key="sen_max_daily_ui",  # unique key
+            on_change=_sync_simple, args=("sen_max_daily_ui", "sen_max_daily")
         )
 
-        sen_min_total = st.number_input(
+        st.number_input(
             "Adcom MIN total",
             min_value=0,
-            max_value=st.session_state["sen_max_total"],
-            value=st.session_state["sen_min_total"],
-            key="sen_min_total",
-            on_change=_enforce_after_edit,
-            args=("sen_min_total", "sen_max_total", "min")
+            max_value=int(st.session_state["sen_max_total"]),
+            value=int(st.session_state["sen_min_total"]),
+            key="sen_min_total_ui",  # unique key
+            on_change=_sync_min, args=("sen_min_total_ui", "sen_min_total", "sen_max_total")
         )
 
-        sen_max_total = st.number_input(
+        st.number_input(
             "Adcom MAX total",
-            min_value=st.session_state["sen_min_total"],
+            min_value=int(st.session_state["sen_min_total"]),
             max_value=999,
-            value=st.session_state["sen_max_total"],
-            key="sen_max_total",
-            on_change=_enforce_after_edit,
-            args=("sen_min_total", "sen_max_total", "max")
+            value=int(st.session_state["sen_max_total"]),
+            key="sen_max_total_ui",  # unique key
+            on_change=_sync_max, args=("sen_max_total_ui", "sen_min_total", "sen_max_total")
         )
-
 
     # 2) Settings
     with st.expander("Settings", expanded=False):
