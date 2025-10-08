@@ -336,7 +336,7 @@ def _recode_regular_to_adcom_in_workbook(
             _norm(primary_header),
             "interviewer",
             "interviewer name",
-            "interviewer_name",
+            "Interviewer_Name",
             "interviewername",
             "name",
             "adcom",
