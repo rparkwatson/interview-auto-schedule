@@ -334,24 +334,35 @@ def _recode_regular_to_adcom_in_workbook(
     def find_col(hdr_map: dict, primary_header: str) -> int | None:
         aliases = {
             _norm(primary_header),
-            "interviewer",
-            "interviewer name",
-            "Interviewer_Name",
-            "interviewername",
+            "interviewer", "interviewer name", "interviewer_name", "interviewername",
             "name",
-            "adcom",
-            "adcom name",
+            # common Regular/AF variants
+            "af", "af name", "af_name", "af interviewer", "af_interviewer", "af interviewer name",
+            "regular", "regular name", "regular interviewer",
+            # sometimes sheets label the column as 'adcom' even on regular tab
+            "adcom", "adcom name",
         }
+        # exact match first
         for a in aliases:
             if a in hdr_map:
                 return hdr_map[a]
+        # fuzzy fallback: any header containing 'interview'
+        for k in hdr_map:
+            if "interview" in k:
+                return hdr_map[k]
+        # last-resort: a plain 'name' column if present
+        if "name" in hdr_map:
+            return hdr_map["name"]
         return None
 
     col_reg_name = find_col(hdr_reg, reg_name_header)
     col_adc_name = find_col(hdr_adc, adcom_name_header)  # not strictly needed but nice to have
 
     if not col_reg_name:
-        st.warning("Re-code skipped: couldn't find interviewer column on Regular sheet.")
+        st.warning(
+            f"Re-code skipped: couldn't find interviewer column on Regular sheet. "
+            f"Headers on row {header_row_index}: {sorted(hdr_reg.keys())[:12]}"
+        )
         return xlsx_bytes
 
     # Collect rows to move
@@ -453,7 +464,7 @@ with st.sidebar:
         adcom_count_header = st.text_input("Adcom count header", value="Pre_Assigned_Count")
 
     # NEW: Re-code UI
-    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=True):
+    with st.expander("Re-code Regular ➜ Adcom (by name)", expanded=Truee):
         st.markdown(
             "If present on the Regular sheet, these interviewers will be moved to the Adcom sheet (before counts are injected)."
         )
