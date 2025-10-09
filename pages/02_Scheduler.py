@@ -24,6 +24,7 @@ def _mark_dirty():
     """Mark results as stale due to a setting change."""
     st.session_state["needs_rerun"] = True
 
+
 def _on_upload_change():
     """When a new file is uploaded, mark stale and clear last results + slider defaults."""
     st.session_state["needs_rerun"] = True
@@ -37,6 +38,7 @@ def _on_upload_change():
     # Optional: also clear run history on new upload
     # st.session_state.pop("run_history", None)
 
+
 def _build_range(lo: int, hi: int, step: int) -> list[int]:
     """Inclusive integer range with guards."""
     lo = int(lo); hi = int(hi); step = max(1, int(step))
@@ -44,10 +46,12 @@ def _build_range(lo: int, hi: int, step: int) -> list[int]:
         lo, hi = hi, lo
     return list(range(lo, hi + 1, step))
 
+
 # --- Bootstrap scheduler defaults BEFORE any widget/range init ---
 def _seed_default(key: str, value: int):
     if key not in st.session_state:
         st.session_state[key] = int(value)
+
 
 # Canonical scheduler defaults (adjust if you prefer different starting values)
 _seed_default("reg_max_daily", 2)
@@ -58,6 +62,7 @@ _seed_default("sen_max_daily", 2)
 _seed_default("sen_min_total", 0)
 _seed_default("sen_max_total", 5)
 
+
 # Keep min ≤ max for both groups (pre-clamp on each rerun)
 def _clamp_pair(min_key: str, max_key: str, lo: int, hi: int):
     a = int(max(lo, min(hi, st.session_state[min_key])))
@@ -67,8 +72,18 @@ def _clamp_pair(min_key: str, max_key: str, lo: int, hi: int):
     st.session_state[min_key] = a
     st.session_state[max_key] = b
 
+
 _clamp_pair("reg_min_total", "reg_max_total", 0, 999)
 _clamp_pair("sen_min_total", "sen_max_total", 0, 999)
+
+
+# NEW: tiny helper to identify real solutions vs infeasible/unsat
+
+def _is_solution(status: str) -> bool:
+    return (status or "").upper() in {
+        "OPTIMAL", "FEASIBLE", "SAT", "INTEGER", "FEASIBLE/SOLUTION_FOUND"
+    }
+
 
 
 def _init_range_state(state_key: str, min_v: int, max_v: int, seed: int, width: int, step: int):
@@ -99,6 +114,7 @@ def _init_range_state(state_key: str, min_v: int, max_v: int, seed: int, width: 
 
     st.session_state[state_key] = (lo, hi)
 
+
 def _compute_rooms_metrics(inputs_local, res_local, assign_local):
     """Returns (rooms_filled, regular_pairs, capacity). Works with new/old solver outputs."""
     pairs_local = res_local.get("pairs", {})
@@ -126,6 +142,7 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
 
     capacity = int(sum(int(cap_map_local.get(t, 0)) for t in slot_ids_local))
     return rooms_filled, reg_pairs, capacity
+
 
 def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
     """
@@ -201,11 +218,13 @@ def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.Dat
 
     return safe
 
+
 def _to_int_or_none(x):
     try:
         return int(x) if pd.notna(x) else None
     except Exception:
         return None
+
 
 # ---------------------------
 # App init
@@ -998,9 +1017,43 @@ if run_clicked:
     with st.spinner("Solving with CP-SAT…"):
         hint = greedy_seed(inputs, seed=getattr(cfg, "random_seed", 0))
         res = solve_weighted(inputs, cfg, hint=hint)
-    st.session_state["last_results"] = {"res": res, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    st.session_state["needs_rerun"] = False
-    st.session_state["inputs_for_results"] = inputs  # ensure results correspond to these inputs
+
+    ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = (res.get("status") or "").upper()
+
+    # Always take a snapshot of defaults used for this run (for history)
+    defaults_snapshot = {
+        "reg_max_daily": int(st.session_state.get("reg_max_daily", 2)),
+        "reg_max_total": int(st.session_state.get("reg_max_total", 7)),
+        "reg_min_total": int(st.session_state.get("reg_min_total", 5)),
+        "sen_max_daily": int(st.session_state.get("sen_max_daily", 2)),
+        "sen_max_total": int(st.session_state.get("sen_max_total", 5)),
+        "sen_min_total": int(st.session_state.get("sen_min_total", 0)),
+    }
+
+    if not _is_solution(status):
+        # Persist minimal last_results and inputs reference
+        st.session_state["last_results"] = {"res": {"status": status, "objective": res.get("objective")}, "ts": ts_now}
+        st.session_state["needs_rerun"] = False
+        st.session_state["inputs_for_results"] = inputs
+
+        # Log settings only; no metrics
+        st.session_state.run_history.append({
+            "timestamp": ts_now,
+            "status": status,
+            "defaults": defaults_snapshot,
+        })
+        st.session_state.run_history = st.session_state.run_history[-50:]
+
+        # Clear any prior detailed assignments to avoid accidental rendering downstream
+        st.warning("Result is **INFEASIBLE** with the current settings. No schedule was generated.")
+        st.info("Only your settings were recorded in Run History. Adjust limits and try again.")
+        st.stop()
+    else:
+        # Feasible → keep full result for downstream rendering
+        st.session_state["last_results"] = {"res": res, "ts": ts_now}
+        st.session_state["needs_rerun"] = False
+        st.session_state["inputs_for_results"] = inputs  # ensure results correspond to these inputs
 
 # Show stale banner only if still stale *after* handling the click
 show_stale = bool(st.session_state.get("needs_rerun") and st.session_state.get("last_results") and not run_clicked)
@@ -1011,6 +1064,14 @@ if show_stale:
 current_res = (st.session_state.get("last_results") or {}).get("res")
 if not current_res:
     st.info("Click **Run scheduler** to produce a schedule.")
+    st.stop()
+
+# Double gate: if not a solution, show message and stop before rendering any artifacts
+status_now = (current_res.get("status") or "").upper()
+if not _is_solution(status_now):
+    st.subheader("Results")
+    st.write(f"Status: **{status_now}**")
+    st.info("No schedule generated. Only the settings were added to Run History.")
     st.stop()
 
 # ---------- Results/Dashboard (built from persisted results) ----------
@@ -1115,11 +1176,12 @@ with st.expander("Regular vs Adcom Assignments"):
     ])
     st.dataframe(_arrow_safe_scan_df(df_group), width='stretch')
 
-# Persist run history with DEFAULT LIMITS snapshot
+# Persist run history with DEFAULT LIMITS snapshot (feasible runs only)
 if run_clicked:
     ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.session_state.run_history.append({
         "timestamp": ts_now,
+        "status": "FEASIBLE",  # feasible runs default
         "filled": total_rooms_used,
         "capacity": total_capacity,
         "pct": pct_filled,
@@ -1135,10 +1197,17 @@ if run_clicked:
     })
     st.session_state.run_history = st.session_state.run_history[-50:]  # keep last 50
 
-# Top-line metrics
+# Top-line metrics deltas (robust to previous infeasible entries without metrics)
 prev = st.session_state.run_history[-2] if len(st.session_state.run_history) >= 2 else None
-delta_filled = None if not prev else total_rooms_used - prev["filled"]
-delta_pct = None if not prev else pct_filled - prev["pct"]
+if prev is not None:
+    prev_filled = prev.get("filled")
+    prev_pct = prev.get("pct")
+else:
+    prev_filled = prev_pct = None
+
+delta_filled = None if prev_filled is None else (total_rooms_used - prev_filled)
+
+delta_pct = None if prev_pct is None else (pct_filled - prev_pct)
 
 m1, m2, m3 = st.columns(3)
 with m1:
@@ -1160,10 +1229,11 @@ if st.session_state.run_history:
         d = item.get("defaults", {})
         rows.append({
             "Run #": idx,
-            "Timestamp": item["timestamp"],
-            "Filled": item["filled"],
-            "Capacity": item["capacity"],
-            "Percent Filled": round(item["pct"], 1),
+            "Timestamp": item.get("timestamp"),
+            "Status": item.get("status", "FEASIBLE"),
+            "Filled": item.get("filled"),
+            "Capacity": item.get("capacity"),
+            "Percent Filled": (None if item.get("pct") is None else round(item["pct"], 1)),
             "Reg Max/Day": d.get("reg_max_daily"),
             "Reg Max Total": d.get("reg_max_total"),
             "Reg Min Total": d.get("reg_min_total"),
@@ -1180,7 +1250,7 @@ if st.session_state.run_history:
         df_hist = df_hist.sort_values("Run #", ascending=False)
 else:
     # ensure df_hist exists before plotting
-    df_hist = pd.DataFrame(columns=["Run #", "Timestamp", "Filled", "Capacity", "Percent Filled"])
+    df_hist = pd.DataFrame(columns=["Run #", "Timestamp", "Status", "Filled", "Capacity", "Percent Filled"])
 
 st.markdown("### Scheduler Results")
 
@@ -1193,7 +1263,7 @@ df_plot = (
             "Percent Filled": pd.to_numeric(df_hist["Percent Filled"], errors="coerce"),
         }
     )
-    .dropna(subset=["Run #", "Percent Filled"])
+    .dropna(subset=["Run #", "Percent Filled"])  # infeasible runs (no % filled) drop here automatically
     .sort_values("Run #")
     .reset_index(drop=True)
 )
