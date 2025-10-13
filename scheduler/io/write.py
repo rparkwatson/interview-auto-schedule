@@ -90,7 +90,7 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
     # 1) Regular_Interviewers (two rows per pair)
     regular_rows = []
     for t in slot_ids:
-        regs = sorted(regs_by_t[t])
+        regs = regs_by_t[t]  # <- keep solver/insertion order; don't alphabetize
         pair_idx = 1
         for k in range(0, len(regs), 2):
             regular_rows.append({"Date_Time": t, "Pair": pair_idx, "Interview": regs[k], "Interviewer_Type": "Regular"})
@@ -99,7 +99,10 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
             pair_idx += 1
     df_regular = pd.DataFrame(regular_rows)
     if not df_regular.empty:
-        df_regular = df_regular.sort_values(by=["Date_Time","Pair"], key=lambda col: col.map(_sort_key) if col.name=="Date_Time" else col)
+        df_regular = df_regular.sort_values(
+            by=["Date_Time","Pair"],
+            key=lambda col: col.map(_sort_key) if col.name=="Date_Time" else col
+    )
 
     # 2) Adcom_Staff (one row per Adcom assignment; multiple per Date_Time allowed)
     adcom_rows = []
