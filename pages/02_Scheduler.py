@@ -1164,7 +1164,7 @@ with c2:
     st.progress(min(max(adcom_pct_capacity/100.0, 0.0), 1.0),
                 text=f"{adcom_share_used:.1f}% of used • {adcom_pct_capacity:.1f}% of capacity")
 
-# Optional: summary table
+# summary table
 with st.expander("Regular vs Adcom Assignments"):
     df_group = pd.DataFrame([
         {"Group": "Regular", "Rooms Used": reg_rooms_used,
