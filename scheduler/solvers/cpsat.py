@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple
 from collections import defaultdict
+import random
 from ortools.sat.python import cp_model
 from ..domain import Inputs
 from ..config import Settings
@@ -18,15 +19,30 @@ class _Vars:
         self.b2b: Dict[Tuple[str, str, str], cp_model.IntVar] = {}
 
 
+def _kind(iv) -> str:
+    """Normalize interviewer kind for robust classification."""
+    return (getattr(iv, "kind", "") or "").strip().lower()
+
+
 def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars]:
     m = cp_model.CpModel()
     V = _Vars()
 
+    # --- Build stable, seeded orders to avoid alphabetical bias in variable creation ---
+    seed_val = 0 if getattr(cfg, "seed", None) is None else int(getattr(cfg, "seed"))
+    rng = random.Random(seed_val)
+
+    # Base (deterministic) lists
     I = [iv.id for iv in inputs.interviewers]
     T = [s.id for s in inputs.slots]
-    regs = {iv.id for iv in inputs.interviewers if iv.kind == "Regular"}
-    seniors = {iv.id for iv in inputs.interviewers if iv.kind == "Senior"}
-    observers = {iv.id for iv in inputs.interviewers if iv.kind == "Observer"}
+
+    # Deterministic shuffle (same seed -> same order; not alphabetical)
+    rng.shuffle(I)
+    rng.shuffle(T)
+
+    regs = {iv.id for iv in inputs.interviewers if _kind(iv) == "regular"}
+    seniors = {iv.id for iv in inputs.interviewers if _kind(iv) == "senior"}
+    observers = {iv.id for iv in inputs.interviewers if _kind(iv) == "observer"}
 
     # Vars
     for i in I:
@@ -54,7 +70,7 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
         m.Add(V.P[t] + V.A[t] <= cap)
 
         # Observers may be allowed beyond rooms by a configured slack
-        if cfg.observer_extra_per_slot >= 0:
+        if getattr(cfg, "observer_extra_per_slot", -1) >= 0:
             m.Add(sum(V.x[(i, t)] for i in observers) <= cfg.observer_extra_per_slot)
 
     # Per-interviewer totals and per-day caps (include pre_assigned in totals)
@@ -75,13 +91,13 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
             m.Add(sum(V.x[(iv.id, t)] for t in ts) <= iv.max_daily)
 
     # Optional global day caps (across everyone)
-    if cfg.day_caps:
+    if getattr(cfg, "day_caps", None):
         for day, cap in cfg.day_caps.items():
             if day in day_slots:
                 m.Add(sum(V.x[(i, t)] for i in I for t in day_slots[day]) <= int(cap))
 
     # Back-to-back adjacency
-    if cfg.back_to_back_mode != "off":
+    if getattr(cfg, "back_to_back_mode", "off") != "off":
         fwd = {s.id: tuple(s.adjacent_forward) for s in inputs.slots}
         if cfg.back_to_back_mode == "hard":
             for i in I:
@@ -123,11 +139,19 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
 
     total_b2b = sum(V.b2b.values()) if V.b2b else 0
 
+    # --- Seeded microscopic jitter to break name-order ties without changing priorities ---
+    # Keep the jitter coefficient tiny; allow override via cfg.w_tiebreak if desired.
+    w_tiebreak = getattr(cfg, "w_tiebreak", 1e-6)
+    iv_jit = {i: rng.random() for i in I}
+    slot_jit = {t: rng.random() for t in T}
+    jitter_obj = sum((iv_jit[i] + slot_jit[t]) * V.x[(i, t)] for i in I for t in T)
+
     m.Maximize(
         cfg.w_pairs * total_pairs
         + cfg.w_fill_adcom * total_adcom
         + total_fill_reg
         - cfg.w_b2b * total_b2b
+        + w_tiebreak * jitter_obj
     )
 
     return m, V
@@ -137,6 +161,11 @@ def solve_weighted(inputs: Inputs, cfg: Settings, hint: Dict[tuple[str, str], in
     m, V = _build_model(inputs, cfg)
 
     solver = cp_model.CpSolver()
+
+    # Seed solver's internal randomness to make runs deterministic for a given seed
+    if getattr(cfg, "seed", None) is not None:
+        solver.parameters.random_seed = int(cfg.seed)
+
     # Warm-start hint (robust to OR-Tools version)
     if hint:
         try:
@@ -144,7 +173,7 @@ def solve_weighted(inputs: Inputs, cfg: Settings, hint: Dict[tuple[str, str], in
         except Exception:
             pass
 
-    if cfg.threads:
+    if getattr(cfg, "threads", None):
         solver.parameters.num_search_workers = cfg.threads
     solver.parameters.max_time_in_seconds = cfg.time_limit_s
 
