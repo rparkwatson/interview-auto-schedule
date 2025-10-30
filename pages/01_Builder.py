@@ -232,49 +232,8 @@ def _clear_everything():
         # recode extras
         "recode_names_norm",
         "recode_stats",
-        # new paste/upload widget keys
-        "max_paste_area",
-        "reg_paste_area",
-        "adcom_paste_area",
-        "max_upload",
-        "reg_upload",
-        "adcom_upload",
     ]:
         st.session_state.pop(k, None)
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# NEW: Paste/Upload helpers
-# ────────────────────────────────────────────────────────────────────────────────
-def _read_tablelike(uploaded_file) -> pd.DataFrame:
-    """Read CSV/TSV/XLSX into a DataFrame."""
-    name = (uploaded_file.name or "").lower()
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        return pd.read_excel(uploaded_file)
-    if name.endswith(".tsv"):
-        return pd.read_csv(uploaded_file, sep="\t")
-    # default CSV (also handles .csv)
-    return pd.read_csv(uploaded_file)
-
-
-def _df_from_paste(text: str) -> pd.DataFrame | None:
-    """Parse pasted text as CSV/TSV/SSV or fallback to a single column."""
-    text = (text or "").strip()
-    if not text:
-        return None
-    try:
-        # sep=None + engine='python' auto-detects delimiter (commas, tabs, semicolons, spaces)
-        return pd.read_csv(io.StringIO(text), sep=None, engine="python")
-    except Exception:
-        # Fallback: treat as a single column, newline separated
-        ser = pd.Series([ln.strip() for ln in text.splitlines() if ln.strip() != ""])
-        return pd.DataFrame({"_col": ser})
-
-
-def _coerce_nonneg_int(s, hi: int = 999) -> pd.Series:
-    """Convert a sequence/Series to non-negative ints clipped to [0, hi]."""
-    s = pd.to_numeric(s, errors="coerce").fillna(0).astype(int)
-    return s.clip(lower=0, upper=hi)
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -684,6 +643,7 @@ if proceed_clicked and uploads_present:
             .astype("int64") # or "Int64" if you want nullable ints elsewhere
         )
 
+
         # Persist
         st.session_state.master_df = master_df
         st.session_state.max_df = max_df
@@ -773,7 +733,7 @@ if st.session_state.get("proceeded"):
     st.divider()
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Max pairs editor  ➜  enhanced with Paste/Copy + Upload
+# Max pairs editor
 # ────────────────────────────────────────────────────────────────────────────────
 if "max_df" in st.session_state:
     st.subheader("Date/Time Slot Capacity")
@@ -783,148 +743,24 @@ if "max_df" in st.session_state:
         if st.button("Apply to all"):
             st.session_state.max_df["Max_Pairs"] = int(global_default)
 
-    # Tabs: Edit | Paste / Copy | Upload
-    t_edit, t_paste, t_upload = st.tabs(["Edit table", "Paste / Copy", "Upload"])
-
-    # --- Edit tab (existing editor) ---
-    with t_edit:
-        edited = st.data_editor(
-            st.session_state.max_df,
-            hide_index=True,
-            num_rows="fixed",
-            column_config={
-                "Date_Time": st.column_config.TextColumn(disabled=True),
-                "Max_Pairs": st.column_config.NumberColumn(min_value=0, max_value=999, step=1),
-            },
-            key="max_editor",
-            width='stretch',
-        )
-        st.session_state.max_df = edited
-
-    # --- Paste / Copy tab ---
-    with t_paste:
-        st.markdown("**Paste options**")
-        st.caption(
-            "Paste a single column of counts (applies by row order), "
-            "a two-column table of `Date_Time` + `Max_Pairs`, or a CSV/TSV block with those columns."
-        )
-        paste_txt = st.text_area(
-            "Paste here",
-            height=160,
-            key="max_paste_area",
-            placeholder="e.g.\n4\n3\n6\n…  or\n2025-01-15 09:00\t4\n2025-01-15 09:30\t6",
-        )
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            if st.button("Apply paste to Max_Pairs", key="max_apply_paste"):
-                pasted = _df_from_paste(paste_txt)
-                if pasted is None or pasted.empty:
-                    st.warning("Nothing to paste.")
-                else:
-                    cur = st.session_state.max_df.copy()
-                    if pasted.shape[1] == 1:
-                        # one column → by order
-                        counts = _coerce_nonneg_int(pasted.iloc[:, 0], hi=999)
-                        if len(counts) != len(cur):
-                            st.error(f"Row count mismatch: pasted {len(counts)} vs table {len(cur)}.")
-                        else:
-                            cur["Max_Pairs"] = counts.to_numpy()
-                            st.session_state.max_df = cur
-                            st.success("Max_Pairs updated by row order.")
-                    else:
-                        # try merge by Date_Time if present
-                        cols = [str(c).strip() for c in pasted.columns]
-                        pasted.columns = cols
-                        if {"Date_Time", "Max_Pairs"}.issubset(set(cols)):
-                            merged = cur[["Date_Time"]].merge(
-                                pasted[["Date_Time", "Max_Pairs"]],
-                                on="Date_Time",
-                                how="left",
-                                validate="one_to_one"
-                            )
-                            if merged["Max_Pairs"].notna().any():
-                                cur["Max_Pairs"] = _coerce_nonneg_int(
-                                    merged["Max_Pairs"].fillna(cur["Max_Pairs"]), hi=999
-                                )
-                                st.session_state.max_df = cur
-                                missing = merged["Max_Pairs"].isna().sum()
-                                if missing:
-                                    st.info(f"Applied where matched Date_Time. {missing} row(s) had no match and were left unchanged.")
-                                else:
-                                    st.success("All rows updated by matching Date_Time.")
-                            else:
-                                st.error("No Date_Time values matched the current table.")
-                        else:
-                            st.error("Expected columns: Date_Time and Max_Pairs (or a single column of counts).")
-
-        with col_p2:
-            csv_bytes = st.session_state.max_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download current table (CSV)",
-                data=csv_bytes,
-                file_name="date_time_capacity.csv",
-                mime="text/csv",
-                key="max_download_csv",
-            )
-            st.text_area(
-                "Copy counts only (one per line)",
-                value="\n".join(map(str, st.session_state.max_df["Max_Pairs"].astype(int).tolist())),
-                height=160,
-                key="max_copy_counts",
-            )
-
-    # --- Upload tab ---
-    with t_upload:
-        up = st.file_uploader(
-            "Upload CSV / TSV / XLSX with `Date_Time` & `Max_Pairs`",
-            type=["csv", "tsv", "xlsx", "xls"],
-            key="max_upload"
-        )
-        if up:
-            up_df = _read_tablelike(up)
-            st.write("Preview:", up_df.head())
-            c1, c2 = st.columns(2)
-            with c1:
-                map_dt = st.selectbox("Map to `Date_Time`", up_df.columns, index=0, key="max_map_dt")
-            with c2:
-                map_mp = st.selectbox(
-                    "Map to `Max_Pairs`", up_df.columns, index=min(1, len(up_df.columns)-1) if len(up_df.columns) > 1 else 0,
-                    key="max_map_mp"
-                )
-            action = st.radio(
-                "How to apply?",
-                ["Replace entire table", "Update by matching Date_Time"],
-                horizontal=True,
-                key="max_upload_mode"
-            )
-
-            if st.button("Apply upload", key="max_apply_upload"):
-                cur = st.session_state.max_df.copy()
-                incoming = up_df.rename(columns={map_dt: "Date_Time", map_mp: "Max_Pairs"})[["Date_Time","Max_Pairs"]].copy()
-                incoming["Max_Pairs"] = _coerce_nonneg_int(incoming["Max_Pairs"], hi=999)
-                if action.startswith("Replace"):
-                    # Keep current order if possible (inner join), otherwise take uploaded order
-                    merged = cur[["Date_Time"]].merge(incoming, on="Date_Time", how="left")
-                    if merged["Max_Pairs"].isna().any():
-                        st.warning("Some current Date_Time values are missing in the upload; they will become 0.")
-                        merged["Max_Pairs"] = merged["Max_Pairs"].fillna(0)
-                    cur["Max_Pairs"] = merged["Max_Pairs"].astype(int)
-                    st.session_state.max_df = cur
-                    st.success("Table replaced from upload (preserving current Date_Time ordering).")
-                else:
-                    merged = cur[["Date_Time"]].merge(incoming, on="Date_Time", how="left")
-                    if merged["Max_Pairs"].notna().any():
-                        cur["Max_Pairs"] = _coerce_nonneg_int(merged["Max_Pairs"].fillna(cur["Max_Pairs"]), hi=999)
-                        st.session_state.max_df = cur
-                        st.success("Max_Pairs updated where Date_Time matched.")
-                    else:
-                        st.error("No Date_Time values matched; nothing changed.")
+    edited = st.data_editor(
+        st.session_state.max_df,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "Date_Time": st.column_config.TextColumn(disabled=True),
+            "Max_Pairs": st.column_config.NumberColumn(min_value=0, max_value=999, step=1),
+        },
+        key="max_editor",
+        width='stretch',
+    )
+    st.session_state.max_df = edited
 
 if st.session_state.get("proceeded"):
     st.divider()
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Pre-Assigned Counts  ➜  enhanced with Paste/Copy + Upload
+# Pre-Assigned Counts (paste-friendly tables)
 # ────────────────────────────────────────────────────────────────────────────────
 if "master_df" in st.session_state and "adcom_df" in st.session_state:
     st.subheader("Pre-Assigned Counts")
@@ -965,14 +801,9 @@ if "master_df" in st.session_state and "adcom_df" in st.session_state:
             st.session_state.adcom_df[adcom_name_col]
         )
 
-    st.caption(
-        "Tip: paste an entire column of numbers into **Pre_Assigned_Count** from Excel/Sheets, "
-        "or upload a file to replace/update by interviewer name."
-    )
+    st.caption("Tip: paste an entire column of numbers into **Pre_Assigned_Count** from Excel/Sheets.")
 
     colA, colB = st.columns(2)
-
-    # ---------- Regular ----------
     with colA:
         st.markdown("**Regular**")
         leftA, rightA = st.columns([1, 3])
@@ -980,114 +811,20 @@ if "master_df" in st.session_state and "adcom_df" in st.session_state:
             reg_fill = st.number_input("Set all (Regular)", min_value=0, max_value=999, value=0, key="reg_fill_val")
             if st.button("Apply to all (Regular)"):
                 st.session_state.reg_pre_df["Pre_Assigned_Count"] = int(reg_fill)
+        display_reg_df = st.session_state.reg_pre_df.drop(columns=["_k"], errors="ignore")
+        st.session_state.reg_pre_df = st.data_editor(
+            display_reg_df,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "Interviewer": st.column_config.TextColumn(disabled=True),
+                "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
+            },
+            column_order=["Interviewer", "Pre_Assigned_Count"],
+            key="reg_pre_editor",
+            width='stretch',
+        )
 
-        # Tabs for Regular
-        treg_edit, treg_paste, treg_upload = st.tabs(["Edit table", "Paste / Copy", "Upload"])
-
-        with treg_edit:
-            display_reg_df = st.session_state.reg_pre_df.drop(columns=["_k"], errors="ignore")
-            st.session_state.reg_pre_df = st.data_editor(
-                display_reg_df,
-                hide_index=True,
-                num_rows="dynamic",
-                column_config={
-                    "Interviewer": st.column_config.TextColumn(disabled=True),
-                    "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
-                },
-                column_order=["Interviewer", "Pre_Assigned_Count"],
-                key="reg_pre_editor",
-                width='stretch',
-            )
-
-        with treg_paste:
-            st.caption("Paste a column of counts (by order), or a two-column block of `Interviewer` + `Pre_Assigned_Count`.")
-            reg_paste_txt = st.text_area("Paste here (Regular)", height=150, key="reg_paste_area")
-            cpa, cpb = st.columns(2)
-            with cpa:
-                if st.button("Apply paste (Regular)"):
-                    pasted = _df_from_paste(reg_paste_txt)
-                    if pasted is None or pasted.empty:
-                        st.warning("Nothing to paste.")
-                    else:
-                        cur = st.session_state.reg_pre_df.copy()
-                        if pasted.shape[1] == 1:
-                            counts = _coerce_nonneg_int(pasted.iloc[:, 0])
-                            if len(counts) != len(cur):
-                                st.error(f"Row count mismatch: pasted {len(counts)} vs table {len(cur)}.")
-                            else:
-                                cur["Pre_Assigned_Count"] = counts.to_numpy()
-                                st.session_state.reg_pre_df = cur
-                                st.success("Updated by row order.")
-                        else:
-                            cols = [str(c).strip() for c in pasted.columns]
-                            pasted.columns = cols
-                            if {"Interviewer", "Pre_Assigned_Count"}.issubset(set(cols)):
-                                merged = cur[["Interviewer"]].merge(
-                                    pasted[["Interviewer", "Pre_Assigned_Count"]],
-                                    on="Interviewer",
-                                    how="left",
-                                    validate="one_to_one",
-                                )
-                                if merged["Pre_Assigned_Count"].notna().any():
-                                    cur["Pre_Assigned_Count"] = _coerce_nonneg_int(
-                                        merged["Pre_Assigned_Count"].fillna(cur["Pre_Assigned_Count"])
-                                    )
-                                    st.session_state.reg_pre_df = cur
-                                    st.success("Counts updated where Interviewer matched.")
-                                else:
-                                    st.error("No Interviewer names matched; nothing changed.")
-                            else:
-                                st.error("Expected columns: Interviewer and Pre_Assigned_Count (or a single column of counts).")
-            with cpb:
-                st.download_button(
-                    "Download Regular (CSV)",
-                    data=st.session_state.reg_pre_df.drop(columns=["_k"], errors="ignore").to_csv(index=False).encode("utf-8"),
-                    file_name="regular_preassigned.csv",
-                    mime="text/csv",
-                    key="reg_download_csv",
-                )
-                st.text_area(
-                    "Copy counts (one per line)",
-                    value="\n".join(map(str, st.session_state.reg_pre_df["Pre_Assigned_Count"].astype(int).tolist())),
-                    height=150,
-                    key="reg_copy_counts",
-                )
-
-        with treg_upload:
-            reg_up = st.file_uploader("Upload Regular CSV/TSV/XLSX", type=["csv","tsv","xlsx","xls"], key="reg_upload")
-            if reg_up:
-                up_df = _read_tablelike(reg_up)
-                st.write("Preview:", up_df.head())
-                c1, c2 = st.columns(2)
-                with c1:
-                    map_name = st.selectbox("Map to `Interviewer`", up_df.columns, key="reg_map_name")
-                with c2:
-                    map_cnt = st.selectbox("Map to `Pre_Assigned_Count`", up_df.columns, key="reg_map_cnt")
-                action = st.radio("How to apply?", ["Replace", "Update by matching Interviewer"], horizontal=True, key="reg_upload_mode")
-                if st.button("Apply upload (Regular)"):
-                    cur = st.session_state.reg_pre_df.copy()
-                    incoming = up_df.rename(columns={map_name: "Interviewer", map_cnt: "Pre_Assigned_Count"})[
-                        ["Interviewer", "Pre_Assigned_Count"]
-                    ].copy()
-                    incoming["Pre_Assigned_Count"] = _coerce_nonneg_int(incoming["Pre_Assigned_Count"])
-                    if action == "Replace":
-                        # preserve current order; missing names become 0
-                        merged = cur[["Interviewer"]].merge(incoming, on="Interviewer", how="left")
-                        cur["Pre_Assigned_Count"] = merged["Pre_Assigned_Count"].fillna(0).astype(int)
-                        st.session_state.reg_pre_df = cur
-                        st.success("Replaced from upload (preserved ordering).")
-                    else:
-                        merged = cur[["Interviewer"]].merge(incoming, on="Interviewer", how="left")
-                        if merged["Pre_Assigned_Count"].notna().any():
-                            cur["Pre_Assigned_Count"] = _coerce_nonneg_int(
-                                merged["Pre_Assigned_Count"].fillna(cur["Pre_Assigned_Count"])
-                            )
-                            st.session_state.reg_pre_df = cur
-                            st.success("Updated counts where Interviewer matched.")
-                        else:
-                            st.error("No Interviewer matches found.")
-
-    # ---------- Adcom ----------
     with colB:
         st.markdown("**Adcom**")
         leftB, rightB = st.columns([1, 3])
@@ -1095,110 +832,19 @@ if "master_df" in st.session_state and "adcom_df" in st.session_state:
             adcom_fill = st.number_input("Set all (Adcom)", min_value=0, max_value=999, value=0, key="adcom_fill_val")
             if st.button("Apply to all (Adcom)"):
                 st.session_state.adcom_pre_df["Pre_Assigned_Count"] = int(adcom_fill)
-
-        tadc_edit, tadc_paste, tadc_upload = st.tabs(["Edit table", "Paste / Copy", "Upload"])
-
-        with tadc_edit:
-            display_adcom_df = st.session_state.adcom_pre_df.drop(columns=["_k"], errors="ignore")
-            st.session_state.adcom_pre_df = st.data_editor(
-                display_adcom_df,
-                hide_index=True,
-                num_rows="dynamic",
-                column_config={
-                    "Interviewer": st.column_config.TextColumn(disabled=True),
-                    "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
-                },
-                column_order=["Interviewer", "Pre_Assigned_Count"],
-                key="adcom_pre_editor",
-                width='stretch',
-            )
-
-        with tadc_paste:
-            st.caption("Paste a column of counts (by order), or `Interviewer` + `Pre_Assigned_Count`.")
-            ad_paste_txt = st.text_area("Paste here (Adcom)", height=150, key="adcom_paste_area")
-            cpa, cpb = st.columns(2)
-            with cpa:
-                if st.button("Apply paste (Adcom)"):
-                    pasted = _df_from_paste(ad_paste_txt)
-                    if pasted is None or pasted.empty:
-                        st.warning("Nothing to paste.")
-                    else:
-                        cur = st.session_state.adcom_pre_df.copy()
-                        if pasted.shape[1] == 1:
-                            counts = _coerce_nonneg_int(pasted.iloc[:, 0])
-                            if len(counts) != len(cur):
-                                st.error(f"Row count mismatch: pasted {len(counts)} vs table {len(cur)}.")
-                            else:
-                                cur["Pre_Assigned_Count"] = counts.to_numpy()
-                                st.session_state.adcom_pre_df = cur
-                                st.success("Updated by row order.")
-                        else:
-                            cols = [str(c).strip() for c in pasted.columns]
-                            pasted.columns = cols
-                            if {"Interviewer", "Pre_Assigned_Count"}.issubset(set(cols)):
-                                merged = cur[["Interviewer"]].merge(
-                                    pasted[["Interviewer", "Pre_Assigned_Count"]],
-                                    on="Interviewer",
-                                    how="left",
-                                    validate="one_to_one",
-                                )
-                                if merged["Pre_Assigned_Count"].notna().any():
-                                    cur["Pre_Assigned_Count"] = _coerce_nonneg_int(
-                                        merged["Pre_Assigned_Count"].fillna(cur["Pre_Assigned_Count"])
-                                    )
-                                    st.session_state.adcom_pre_df = cur
-                                    st.success("Counts updated where Interviewer matched.")
-                                else:
-                                    st.error("No Interviewer names matched; nothing changed.")
-                            else:
-                                st.error("Expected columns: Interviewer and Pre_Assigned_Count (or a single column of counts).")
-            with cpb:
-                st.download_button(
-                    "Download Adcom (CSV)",
-                    data=st.session_state.adcom_pre_df.drop(columns=["_k"], errors="ignore").to_csv(index=False).encode("utf-8"),
-                    file_name="adcom_preassigned.csv",
-                    mime="text/csv",
-                    key="adcom_download_csv",
-                )
-                st.text_area(
-                    "Copy counts (one per line)",
-                    value="\n".join(map(str, st.session_state.adcom_pre_df["Pre_Assigned_Count"].astype(int).tolist())),
-                    height=150,
-                    key="adcom_copy_counts",
-                )
-
-        with tadc_upload:
-            ad_up = st.file_uploader("Upload Adcom CSV/TSV/XLSX", type=["csv","tsv","xlsx","xls"], key="adcom_upload")
-            if ad_up:
-                up_df = _read_tablelike(ad_up)
-                st.write("Preview:", up_df.head())
-                c1, c2 = st.columns(2)
-                with c1:
-                    map_name = st.selectbox("Map to `Interviewer`", up_df.columns, key="ad_map_name")
-                with c2:
-                    map_cnt = st.selectbox("Map to `Pre_Assigned_Count`", up_df.columns, key="ad_map_cnt")
-                action = st.radio("How to apply?", ["Replace", "Update by matching Interviewer"], horizontal=True, key="ad_upload_mode")
-                if st.button("Apply upload (Adcom)"):
-                    cur = st.session_state.adcom_pre_df.copy()
-                    incoming = up_df.rename(columns={map_name: "Interviewer", map_cnt: "Pre_Assigned_Count"})[
-                        ["Interviewer", "Pre_Assigned_Count"]
-                    ].copy()
-                    incoming["Pre_Assigned_Count"] = _coerce_nonneg_int(incoming["Pre_Assigned_Count"])
-                    if action == "Replace":
-                        merged = cur[["Interviewer"]].merge(incoming, on="Interviewer", how="left")
-                        cur["Pre_Assigned_Count"] = merged["Pre_Assigned_Count"].fillna(0).astype(int)
-                        st.session_state.adcom_pre_df = cur
-                        st.success("Replaced from upload (preserved ordering).")
-                    else:
-                        merged = cur[["Interviewer"]].merge(incoming, on="Interviewer", how="left")
-                        if merged["Pre_Assigned_Count"].notna().any():
-                            cur["Pre_Assigned_Count"] = _coerce_nonneg_int(
-                                merged["Pre_Assigned_Count"].fillna(cur["Pre_Assigned_Count"])
-                            )
-                            st.session_state.adcom_pre_df = cur
-                            st.success("Updated counts where Interviewer matched.")
-                        else:
-                            st.error("No Interviewer matches found.")
+        display_adcom_df = st.session_state.adcom_pre_df.drop(columns=["_k"], errors="ignore")
+        st.session_state.adcom_pre_df = st.data_editor(
+            display_adcom_df,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "Interviewer": st.column_config.TextColumn(disabled=True),
+                "Pre_Assigned_Count": st.column_config.NumberColumn(min_value=0, step=1),
+            },
+            column_order=["Interviewer", "Pre_Assigned_Count"],
+            key="adcom_pre_editor",
+            width='stretch',
+        )
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Invalidate previously generated workbook if inputs changed (after editors)
