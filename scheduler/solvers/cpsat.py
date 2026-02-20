@@ -29,7 +29,8 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
     V = _Vars()
 
     # --- Build stable, seeded orders to avoid alphabetical bias in variable creation ---
-    seed_val = 0 if getattr(cfg, "seed", None) is None else int(getattr(cfg, "seed"))
+    # Preferred field is random_seed; keep backward-compatible fallback to seed.
+    seed_val = int(getattr(cfg, "random_seed", getattr(cfg, "seed", 0)) or 0)
     rng = random.Random(seed_val)
 
     # Base (deterministic) lists
@@ -139,9 +140,32 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
 
     total_b2b = sum(V.b2b.values()) if V.b2b else 0
 
+    # Fairness: penalize spread in total assigned load (including pre-assigned)
+    # within each major interviewer group.
+    def _spread_penalty(ids: set[str], label: str) -> cp_model.LinearExpr:
+        if len(ids) <= 1:
+            return 0
+
+        # Keep conservative bounds for robustness.
+        ub = max(int(iv.max_total) for iv in inputs.interviewers if iv.id in ids)
+        max_v = m.NewIntVar(0, ub, f"max_load_{label}")
+        min_v = m.NewIntVar(0, ub, f"min_load_{label}")
+
+        for iv in inputs.interviewers:
+            if iv.id not in ids:
+                continue
+            load_i = sum(V.x[(iv.id, t)] for t in T) + int(iv.pre_assigned)
+            m.Add(max_v >= load_i)
+            m.Add(min_v <= load_i)
+
+        return max_v - min_v
+
+    reg_spread = _spread_penalty(regs, "reg")
+    senior_spread = _spread_penalty(seniors, "senior")
+
     # --- Seeded microscopic jitter to break name-order ties without changing priorities ---
     # Keep the jitter coefficient tiny; allow override via cfg.w_tiebreak if desired.
-    w_tiebreak = getattr(cfg, "w_tiebreak", 1e-6)
+    w_tiebreak = float(getattr(cfg, "w_tiebreak", 1e-6))
     iv_jit = {i: rng.random() for i in I}
     slot_jit = {t: rng.random() for t in T}
     jitter_obj = sum((iv_jit[i] + slot_jit[t]) * V.x[(i, t)] for i in I for t in T)
@@ -151,6 +175,8 @@ def _build_model(inputs: Inputs, cfg: Settings) -> tuple[cp_model.CpModel, _Vars
         + cfg.w_fill_adcom * total_adcom
         + total_fill_reg
         - cfg.w_b2b * total_b2b
+        - cfg.w_fair_reg_spread * reg_spread
+        - cfg.w_fair_senior_spread * senior_spread
         + w_tiebreak * jitter_obj
     )
 
@@ -163,8 +189,8 @@ def solve_weighted(inputs: Inputs, cfg: Settings, hint: Dict[tuple[str, str], in
     solver = cp_model.CpSolver()
 
     # Seed solver's internal randomness to make runs deterministic for a given seed
-    if getattr(cfg, "seed", None) is not None:
-        solver.parameters.random_seed = int(cfg.seed)
+    seed_val = int(getattr(cfg, "random_seed", getattr(cfg, "seed", 0)) or 0)
+    solver.parameters.random_seed = seed_val
 
     # Warm-start hint (robust to OR-Tools version)
     if hint:

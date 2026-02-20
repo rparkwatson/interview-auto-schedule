@@ -23,3 +23,11 @@ class Settings(BaseModel):
     # Scarcity + Adcom weighting (used by v4+ objective)
     scarcity_bonus: int = 5                     # bonus per missing Regular on a slot
     w_fill_adcom: int = 500
+
+    # Randomness / tiebreak controls
+    random_seed: int = Field(0, ge=0)
+    w_tiebreak: float = Field(1e-6, ge=0.0)
+
+    # Fairness controls (penalize spread in total assigned load by interviewer kind)
+    w_fair_reg_spread: int = Field(250, ge=0)
+    w_fair_senior_spread: int = Field(100, ge=0)
