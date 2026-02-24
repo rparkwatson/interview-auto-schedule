@@ -589,10 +589,10 @@ with flow:
         st.session_state.setdefault("sen_min_total", 0)
         st.session_state.setdefault("sen_max_total", 5)
 
-        _init_range_state("reg_max_total_range", 0, 10, int(st.session_state["reg_max_total"]), width=w_total, step=step)
-        _init_range_state("reg_min_total_range", 0, 10, int(st.session_state["reg_min_total"]), width=w_total, step=step)
-        _init_range_state("sen_max_total_range", 0, 10, int(st.session_state["sen_max_total"]), width=w_total, step=step)
-        _init_range_state("sen_min_total_range", 0, 10, int(st.session_state["sen_min_total"]), width=w_total, step=step)
+        _init_range_state("reg_max_total_range", 0, 15, int(st.session_state["reg_max_total"]), width=w_total, step=step)
+        _init_range_state("reg_min_total_range", 0, 15, int(st.session_state["reg_min_total"]), width=w_total, step=step)
+        _init_range_state("sen_max_total_range", 0, 15, int(st.session_state["sen_max_total"]), width=w_total, step=step)
+        _init_range_state("sen_min_total_range", 0, 15, int(st.session_state["sen_min_total"]), width=w_total, step=step)
 
         def _snap_up(x: int, step: int) -> int:
             return ((int(x) + step - 1) // step) * step
@@ -623,18 +623,18 @@ with flow:
             st.session_state[max_key] = _clamp_snap_pair(new_lo, new_hi, lo_bound, hi_bound, step)
 
         st.markdown("**Regulars**")
-        reg_max_daily_val = st.slider("Regular max/day", 0, 10, int(st.session_state["reg_max_daily"]), step=step, key="reg_max_daily")
-        _normalize_range_to_static_bounds("reg_min_total_range", 0, 10, step)
-        reg_min_total_min, reg_min_total_max = st.slider("Regular min total", 0, 10, st.session_state["reg_min_total_range"], step=step, key="reg_min_total_range")
-        _enforce_total_dependency("reg_min_total_range", "reg_max_total_range", 0, 10, step)
-        reg_max_total_min, reg_max_total_max = st.slider("Regular max total", 0, 10, st.session_state["reg_max_total_range"], step=step, key="reg_max_total_range")
+        reg_max_daily_val = st.slider("Regular max/day", 0, 15, int(st.session_state["reg_max_daily"]), step=step, key="reg_max_daily")
+        _normalize_range_to_static_bounds("reg_min_total_range", 0, 15, step)
+        reg_min_total_min, reg_min_total_max = st.slider("Regular min total", 0, 15, st.session_state["reg_min_total_range"], step=step, key="reg_min_total_range")
+        _enforce_total_dependency("reg_min_total_range", "reg_max_total_range", 0, 15, step)
+        reg_max_total_min, reg_max_total_max = st.slider("Regular max total", 0, 15, st.session_state["reg_max_total_range"], step=step, key="reg_max_total_range")
 
         st.markdown("**Adcoms**")
-        sen_max_daily_val = st.slider("Adcom max/day", 0, 10, int(st.session_state["sen_max_daily"]), step=step, key="sen_max_daily")
-        _normalize_range_to_static_bounds("sen_min_total_range", 0, 10, step)
-        sen_min_total_min, sen_min_total_max = st.slider("Adcom min total", 0, 10, st.session_state["sen_min_total_range"], step=step, key="sen_min_total_range")
-        _enforce_total_dependency("sen_min_total_range", "sen_max_total_range", 0, 10, step)
-        sen_max_total_min, sen_max_total_max = st.slider("Adcom max total", 0, 10, st.session_state["sen_max_total_range"], step=step, key="sen_max_total_range")
+        sen_max_daily_val = st.slider("Adcom max/day", 0, 15, int(st.session_state["sen_max_daily"]), step=step, key="sen_max_daily")
+        _normalize_range_to_static_bounds("sen_min_total_range", 0, 15, step)
+        sen_min_total_min, sen_min_total_max = st.slider("Adcom min total", 0, 15, st.session_state["sen_min_total_range"], step=step, key="sen_min_total_range")
+        _enforce_total_dependency("sen_min_total_range", "sen_max_total_range", 0, 15, step)
+        sen_max_total_min, sen_max_total_max = st.slider("Adcom max total", 0, 15, st.session_state["sen_max_total_range"], step=step, key="sen_max_total_range")
 
         reg_max_total_step = reg_min_total_step = sen_max_total_step = sen_min_total_step = step
         scan_time_limit = st.number_input("Time limit per scenario (s)", 5, 900, min(60, int(time_limit)), key="scan_time_limit", disabled=True)
