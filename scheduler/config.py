@@ -9,13 +9,17 @@ class Settings(BaseModel):
 
     # Policy toggles
     back_to_back_mode: str = Field("soft", pattern="^(soft|hard|off)$")
+    no_three_in_row_mode: str = Field("off", pattern="^(soft|hard|off)$")
+    objective_strategy: str = Field("lexicographic", pattern="^(weighted|lexicographic)$")
     observer_extra_per_slot: int = 0            # allow observers beyond pair capacity
 
     # Objective weights
     w_pairs: int = 1_000_000
     w_fill: int = 1_000
     w_b2b: int = 1
+    w_run3: int = 5
     adjacency_grace_min: int = 0
+    adjacency_lookahead_slots: int = Field(1, ge=1, le=4)
 
     # Optional global day caps: {"YYYY-MM-DD": max_assignments_that_day}
     day_caps: Optional[Dict[str, int]] = None

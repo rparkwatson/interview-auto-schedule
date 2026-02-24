@@ -409,7 +409,8 @@ with st.sidebar:
         threads = st.number_input("Threads (0=auto)", 0, 64, 0, key="threads", on_change=_mark_dirty, disabled=True)
         b2b_mode = st.selectbox("Back-to-back", ["soft", "hard", "off"], index=0, key="b2b_mode", on_change=_mark_dirty)
         observer_extra = st.number_input("Observer extra per slot", 0, 10, 0, key="observer_extra", on_change=_mark_dirty, disabled=True)
-        adjacency_grace = st.number_input("Adjacency grace (min)", 0, 30, 0, key="adjacency_grace", on_change=_mark_dirty, disabled=True)
+        adjacency_grace = st.number_input("Adjacency grace (min)", 0, 30, 0, key="adjacency_grace", on_change=_mark_dirty)
+        adjacency_lookahead = st.number_input("Adjacency lookahead slots", 1, 4, 1, key="adjacency_lookahead", on_change=_mark_dirty)
 
         # NEW: randomness control for de-biasing ties/seed order
         random_seed_input = st.number_input(
@@ -422,7 +423,10 @@ with st.sidebar:
         with st.expander("Objective Weights", expanded=False):
             w_pairs = st.number_input("Weight: pairs", 1000, 5_000_000, 1_000_000, step=1000, key="w_pairs", on_change=_mark_dirty, disabled=True)
             w_fill = st.number_input("Weight: fill (Regulars)", 10, 100_000, 1000, step=10, key="w_fill", on_change=_mark_dirty, disabled=True)
-            w_b2b = st.number_input("Penalty: back-to-back", 0, 1000, 1, key="w_b2b", on_change=_mark_dirty, disabled=True)
+            w_b2b = st.number_input("Penalty: back-to-back", 0, 10000, 250, key="w_b2b", on_change=_mark_dirty)
+            no_three_mode = st.selectbox("No three in a row", ["soft", "hard", "off"], index=0, key="no_three_mode", on_change=_mark_dirty)
+            w_run3 = st.number_input("Penalty: 3-in-a-row", 0, 10000, 500, key="w_run3", on_change=_mark_dirty)
+            objective_strategy = st.selectbox("Objective strategy", ["lexicographic", "weighted"], index=0, key="objective_strategy", on_change=_mark_dirty)
 
         with st.expander("Scarcity Priority", expanded=False):
             scarcity_bonus = st.number_input("Scarcity bonus (per missing Regular)", 0, 100, 5, key="scarcity_bonus", on_change=_mark_dirty, disabled=True)
@@ -445,7 +449,11 @@ cfg = Settings(
     w_pairs=int(w_pairs),
     w_fill=int(w_fill),
     w_b2b=int(w_b2b),
+    no_three_in_row_mode=no_three_mode,
+    w_run3=int(w_run3),
+    objective_strategy=objective_strategy,
     adjacency_grace_min=int(adjacency_grace),
+    adjacency_lookahead_slots=int(adjacency_lookahead),
     scarcity_bonus=int(scarcity_bonus),
     w_fill_adcom=int(w_fill_adcom),
     random_seed=int(st.session_state.get("random_seed", 0)),  # ← safe access
@@ -526,7 +534,7 @@ except Exception as e:
     st.stop()
 
 # Build adjacency
-nexts = build_adjacency(inputs.slots, grace_min=cfg.adjacency_grace_min)
+nexts = build_adjacency(inputs.slots, grace_min=cfg.adjacency_grace_min, lookahead_slots=cfg.adjacency_lookahead_slots)
 slots2 = [
     Slot(
         id=s.id, start=s.start, end=s.end, day_key=s.day_key,
@@ -737,7 +745,7 @@ if run_autoscan:
         )
 
         # Build adjacency (same grace as current cfg)
-        nexts_i = build_adjacency(inputs_i.slots, grace_min=cfg.adjacency_grace_min)
+        nexts_i = build_adjacency(inputs_i.slots, grace_min=cfg.adjacency_grace_min, lookahead_slots=cfg.adjacency_lookahead_slots)
         slots2_i = [
             Slot(id=s.id, start=s.start, end=s.end, day_key=s.day_key,
                  adjacent_forward=frozenset(nexts_i.get(s.id, tuple())))
@@ -759,6 +767,10 @@ if run_autoscan:
             w_fill=cfg.w_fill,
             w_b2b=cfg.w_b2b,
             adjacency_grace_min=cfg.adjacency_grace_min,
+            adjacency_lookahead_slots=cfg.adjacency_lookahead_slots,
+            no_three_in_row_mode=cfg.no_three_in_row_mode,
+            w_run3=cfg.w_run3,
+            objective_strategy=cfg.objective_strategy,
             scarcity_bonus=cfg.scarcity_bonus,
             w_fill_adcom=cfg.w_fill_adcom,
             day_caps=getattr(cfg, "day_caps", None),
@@ -939,7 +951,7 @@ if run_autoscan:
                                 "senior_min_total": int(row["adcom_min_total"]),
                             }
                         )
-                        nexts_run = build_adjacency(inputs_run.slots, grace_min=cfg.adjacency_grace_min)
+                        nexts_run = build_adjacency(inputs_run.slots, grace_min=cfg.adjacency_grace_min, lookahead_slots=cfg.adjacency_lookahead_slots)
                         slots2_run = [
                             Slot(
                                 id=s.id, start=s.start, end=s.end, day_key=s.day_key,
