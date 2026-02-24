@@ -7,6 +7,8 @@ import numpy as np
 import streamlit as st
 import io
 import itertools
+import time
+from dataclasses import replace
 import altair as alt
 
 from scheduler.config import Settings
@@ -142,6 +144,47 @@ def _compute_rooms_metrics(inputs_local, res_local, assign_local):
 
     capacity = int(sum(int(cap_map_local.get(t, 0)) for t in slot_ids_local))
     return rooms_filled, reg_pairs, capacity
+
+
+def _build_scenario_grid(
+    reg_max_daily_grid: list[int],
+    reg_max_total_grid: list[int],
+    reg_min_total_grid: list[int],
+    sen_max_daily_grid: list[int],
+    sen_max_total_grid: list[int],
+    sen_min_total_grid: list[int],
+) -> list[tuple[int, int, int, int, int, int]]:
+    """Build candidate scenarios and prune impossible min/max combinations."""
+    scenarios = []
+    for r_md, r_mt, r_mn, s_md, s_mt, s_mn in itertools.product(
+        reg_max_daily_grid,
+        reg_max_total_grid,
+        reg_min_total_grid,
+        sen_max_daily_grid,
+        sen_max_total_grid,
+        sen_min_total_grid,
+    ):
+        if r_mn > r_mt or s_mn > s_mt:
+            continue
+        scenarios.append((int(r_md), int(r_mt), int(r_mn), int(s_md), int(s_mt), int(s_mn)))
+    return scenarios
+
+
+def _apply_scan_defaults(inputs_template: Inp, *, r_md: int, r_mt: int, r_mn: int, s_md: int, s_mt: int, s_mn: int) -> Inp:
+    """Reuse parsed workbook and only swap per-kind interviewer limits for scans."""
+    updated_interviewers = []
+    for iv in inputs_template.interviewers:
+        if iv.kind == "Regular":
+            updated_interviewers.append(replace(iv, max_daily=int(r_md), max_total=int(r_mt), min_total=int(r_mn)))
+        elif iv.kind == "Senior":
+            updated_interviewers.append(replace(iv, max_daily=int(s_md), max_total=int(s_mt), min_total=int(s_mn)))
+        else:
+            updated_interviewers.append(iv)
+    return Inp(
+        interviewers=updated_interviewers,
+        slots=inputs_template.slots,
+        max_pairs_per_slot=inputs_template.max_pairs_per_slot,
+    )
 
 
 def _arrow_safe_scan_df(df: pd.DataFrame, max_rows: int | None = 2000) -> pd.DataFrame:
@@ -550,16 +593,23 @@ with st.sidebar:
             "Warn if scenarios exceed", 1, 500, 50, key="max_scenarios_warn", disabled=True
         )
 
-        # Scenario count estimate (per-day is single choice => length 1 for each group)
-        _est = (
-            1 *
-            len(_build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)) *
-            len(_build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)) *
-            1 *
-            len(_build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)) *
-            len(_build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step))
+        _reg_max_total_grid = _build_range(reg_max_total_min, reg_max_total_max, reg_max_total_step)
+        _reg_min_total_grid = _build_range(reg_min_total_min, reg_min_total_max, reg_min_total_step)
+        _sen_max_total_grid = _build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)
+        _sen_min_total_grid = _build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step)
+
+        _est_raw = (
+            len(_reg_max_total_grid) *
+            len(_reg_min_total_grid) *
+            len(_sen_max_total_grid) *
+            len(_sen_min_total_grid)
         )
-        st.caption(f"Estimated scenarios: **{_est:,}**")
+        _est_valid = len(_build_scenario_grid(
+            [int(reg_max_daily_val)], _reg_max_total_grid, _reg_min_total_grid,
+            [int(sen_max_daily_val)], _sen_max_total_grid, _sen_min_total_grid
+        ))
+        _pruned = _est_raw - _est_valid
+        st.caption(f"Estimated scenarios: **{_est_valid:,}** valid ({_pruned:,} pruned as impossible)")
 
         run_autoscan = st.button("Run auto-scan now", type="secondary", key="run_autoscan_btn")
 
@@ -733,51 +783,48 @@ if run_autoscan:
     sen_max_total_grid = _build_range(sen_max_total_min, sen_max_total_max, sen_max_total_step)
     sen_min_total_grid = _build_range(sen_min_total_min, sen_min_total_max, sen_min_total_step)
 
-    grid = list(itertools.product(
+    grid = _build_scenario_grid(
         reg_max_daily_grid, reg_max_total_grid, reg_min_total_grid,
-        sen_max_daily_grid, sen_max_total_grid, sen_min_total_grid
-    ))
+        sen_max_daily_grid, sen_max_total_grid, sen_min_total_grid,
+    )
 
-    st.info(f"Trying {len(grid)} scenario(s) …")
+    st.info(f"Trying {len(grid)} valid scenario(s) …")
     if len(grid) > max_scenarios_warn:
         st.warning("This may take a while. Consider narrowing the ranges.")
+    if not grid:
+        st.warning("No valid scenarios to scan. Ensure each min total is less than or equal to max total.")
 
-    # Cache the upload bytes so we can re-parse cheaply
+    # Cache upload bytes once and parse workbook once; then only swap interviewer limits.
     try:
         file_bytes = up.getvalue()
     except Exception:
         file_bytes = None
 
+    wb = io.BytesIO(file_bytes) if file_bytes is not None else up
+    inputs_base = read_inputs_from_legacy(
+        wb, year=int(year), slot_minutes=int(slot_minutes),
+        defaults={
+            "reg_max_daily": int(st.session_state.get("reg_max_daily", 2)),
+            "reg_max_total": int(st.session_state.get("reg_max_total", 7)),
+            "reg_min_total": int(st.session_state.get("reg_min_total", 0)),
+            "senior_max_daily": int(st.session_state.get("sen_max_daily", 2)),
+            "senior_max_total": int(st.session_state.get("sen_max_total", 5)),
+            "senior_min_total": int(st.session_state.get("sen_min_total", 0)),
+        }
+    )
+
     results_rows = []
     best = None  # ((pct_filled, reg_pairs, objective), scenario index, row dict)
 
     prog = st.progress(0.0)
+    prog_text = st.empty()
+    t0 = time.perf_counter()
     for idx, (r_md, r_mt, r_mn, s_md, s_mt, s_mn) in enumerate(grid, start=1):
-        # Re-parse with these defaults
-        wb = io.BytesIO(file_bytes) if file_bytes is not None else up
-        try:
-            inputs_i = read_inputs_from_legacy(
-                wb, year=int(year), slot_minutes=int(slot_minutes),
-                defaults={
-                    "reg_max_daily": int(r_md),
-                    "reg_max_total": int(r_mt),
-                    "reg_min_total": int(r_mn),
-                    "senior_max_daily": int(s_md),
-                    "senior_max_total": int(s_mt),
-                    "senior_min_total": int(s_mn),
-                }
-            )
-        except Exception as e:
-            results_rows.append({
-                "Scenario #": idx,
-                "Status": f"PARSE FAIL: {e}",
-                "Rooms Filled": None, "Reg Pairs": None, "Capacity": None, "Percent Filled": None,
-                "Objective": None,
-                "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
-                "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
-            })
-            prog.progress(idx/len(grid))
-            continue
+        inputs_i = _apply_scan_defaults(
+            inputs_base,
+            r_md=r_md, r_mt=r_mt, r_mn=r_mn,
+            s_md=s_md, s_mt=s_mt, s_mn=s_mn,
+        )
 
         # Build adjacency (same grace as current cfg)
         nexts_i = build_adjacency(inputs_i.slots, grace_min=cfg.adjacency_grace_min)
@@ -821,7 +868,12 @@ if run_autoscan:
                 "reg_max/day": r_md, "reg_max_total": r_mt, "reg_min_total": r_mn,
                 "adcom_max/day": s_md, "adcom_max_total": s_mt, "adcom_min_total": s_mn,
             })
-            prog.progress(idx/len(grid))
+            frac = idx/len(grid)
+            prog.progress(frac)
+            if idx == 1 or idx % 5 == 0 or idx == len(grid):
+                elapsed = time.perf_counter() - t0
+                eta = max(0.0, (elapsed / idx) * (len(grid) - idx))
+                prog_text.caption(f"Progress: {idx}/{len(grid)} ({frac*100:.0f}%) • ETA ~{eta:.1f}s")
             continue
 
         assign_i = res_i.get("assign", {})
@@ -867,10 +919,16 @@ if run_autoscan:
             if (best is None) or (key > best[0]):
                 best = (key, idx, row)
 
-        prog.progress(idx/len(grid))
+        frac = idx/len(grid)
+        prog.progress(frac)
+        if idx == 1 or idx % 5 == 0 or idx == len(grid):
+            elapsed = time.perf_counter() - t0
+            eta = max(0.0, (elapsed / idx) * (len(grid) - idx))
+            prog_text.caption(f"Progress: {idx}/{len(grid)} ({frac*100:.0f}%) • ETA ~{eta:.1f}s")
 
     # Show results table (TOP 50 by % filled, then reg pairs, then objective)
     if results_rows:
+        prog_text.empty()
         df_scan = pd.DataFrame(results_rows)
 
         # Coerce numeric columns for robust sorting
