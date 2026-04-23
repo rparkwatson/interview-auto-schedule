@@ -116,7 +116,8 @@ def make_excel_report(
     if not df_regular.empty:
         df_regular = df_regular.sort_values(
             by=["Date_Time","Pair"],
-            key=lambda col: col.map(_sort_key) if col.name=="Date_Time" else col
+            key=lambda col: col.map(_sort_key) if col.name=="Date_Time" else col,
+            kind="stable",
     )
 
     # 2) Adcom_Staff (one row per Adcom assignment; multiple per Date_Time allowed)
@@ -181,12 +182,14 @@ def make_excel_report(
         df_slots = df_slots.sort_values(by=["Date_Time"], key=lambda col: col.map(_sort_key))
 
     # 6) Assigned_Pairs (mix pairs and adcom singles)
-    # Build pair labels directly from Regular_Interviewers rows to keep both sheets aligned.
+    # Use `df_regular` as canonical ordering so `Assigned_Pairs` matches `Regular_Interviewers` exactly.
     regular_pair_labels_by_t: Dict[str, List[str]] = {t: [] for t in slot_ids}
     for t in slot_ids:
-        rows_t = [r for r in regular_rows if r["Date_Time"] == t]
+        if df_regular.empty:
+            continue
+        rows_t = df_regular[df_regular["Date_Time"] == t]
         by_pair: Dict[int, List[str]] = {}
-        for r in rows_t:
+        for _, r in rows_t.iterrows():
             by_pair.setdefault(int(r["Pair"]), []).append(r["Interview"])
         for pair_idx in sorted(by_pair):
             names = by_pair[pair_idx]
