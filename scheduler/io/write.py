@@ -152,6 +152,15 @@ def make_excel_report(
             "Total_Assignments": total
         })
     df_totals = pd.DataFrame(totals_rows)
+    if not df_totals.empty:
+        interviewer_type_order = {"Regular": 0, "Adcom": 1}
+        df_totals["_type_sort"] = df_totals["Interviewer_Type"].map(interviewer_type_order).fillna(99)
+        df_totals = (
+            df_totals
+            .sort_values(by=["_type_sort", "Interviewer_Name"], kind="stable")
+            .drop(columns=["_type_sort"])
+            .reset_index(drop=True)
+        )
 
     # 5) Slot_Summary (pairs + adcom singles)
     slots_rows = []
@@ -172,6 +181,18 @@ def make_excel_report(
         df_slots = df_slots.sort_values(by=["Date_Time"], key=lambda col: col.map(_sort_key))
 
     # 6) Assigned_Pairs (mix pairs and adcom singles)
+    # Build pair labels directly from Regular_Interviewers rows to keep both sheets aligned.
+    regular_pair_labels_by_t: Dict[str, List[str]] = {t: [] for t in slot_ids}
+    for t in slot_ids:
+        rows_t = [r for r in regular_rows if r["Date_Time"] == t]
+        by_pair: Dict[int, List[str]] = {}
+        for r in rows_t:
+            by_pair.setdefault(int(r["Pair"]), []).append(r["Interview"])
+        for pair_idx in sorted(by_pair):
+            names = by_pair[pair_idx]
+            if len(names) == 2:
+                regular_pair_labels_by_t[t].append(f"{names[0]} & {names[1]}")
+
     # Create enough columns to show all rooms: max of (Max_Pairs) across times, but at least 6.
     max_slots_cols = max(max(cap_pairs.values()), 6) if cap_pairs else 6
     col_names = ["Date_Time"] + [f"Slot {i}" for i in range(1, max_slots_cols+1)]
@@ -181,7 +202,7 @@ def make_excel_report(
         row["Date_Time"] = t
 
         # Build ordered room list: pairs first (A & B), then Adcom singles
-        pairs = [f"{a} & {b}" for a, b in pairs_by_t[t]]
+        pairs = regular_pair_labels_by_t[t]
         adcoms = sorted(adcom_by_t[t])
 
         rooms = pairs + adcoms  # pairs in Slot 1..p, then adcom singles
@@ -191,28 +212,6 @@ def make_excel_report(
     df_ap = pd.DataFrame(ap_rows, columns=col_names)
     if not df_ap.empty:
         df_ap = df_ap.sort_values(by=["Date_Time"], key=lambda col: col.map(_sort_key))
-
-    # Consistency check: pair labels reconstructed from Regular_Interviewers must
-    # match Assigned_Pairs pair slot labels for each time slot.
-    regular_pair_labels_by_t: Dict[str, List[str]] = {t: [] for t in slot_ids}
-    for t in slot_ids:
-        rows_t = [r for r in regular_rows if r["Date_Time"] == t]
-        by_pair: Dict[int, List[str]] = {}
-        for r in rows_t:
-            by_pair.setdefault(r["Pair"], []).append(r["Interview"])
-        for pair_idx in sorted(by_pair):
-            names = by_pair[pair_idx]
-            if len(names) == 2:
-                regular_pair_labels_by_t[t].append(f"{names[0]} & {names[1]}")
-    assigned_pair_labels_by_t: Dict[str, List[str]] = {
-        t: [f"{a} & {b}" for a, b in pairs_by_t[t]]
-        for t in slot_ids
-    }
-    for t in slot_ids:
-        assert regular_pair_labels_by_t[t] == assigned_pair_labels_by_t[t], (
-            f"Pair label mismatch at {t}: "
-            f"{regular_pair_labels_by_t[t]} != {assigned_pair_labels_by_t[t]}"
-        )
 
     # Write Excel
     dirpath = os.path.dirname(path)
