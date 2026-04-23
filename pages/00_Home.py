@@ -24,7 +24,7 @@ with c1:
 
 with c2:
     st.subheader("Step 2 — Run Scheduler")
-    st.write("Use the formatted workbook to run the solver, scan scenarios, and export reports.")
+    st.write("Use the formatted workbook to set limits manually, run the solver, and export reports.")
 
     # enable only if Step 1 produced bytes
     disabled = not has_file
