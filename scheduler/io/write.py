@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import csv
+import random
 from io import StringIO
 from typing import Dict, Tuple, List
 from datetime import datetime
@@ -67,7 +68,13 @@ def _sort_key(label: str) -> Tuple:
         date_key = date
     return (date_key, idx, t_key)
 
-def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, path: str) -> str:
+def make_excel_report(
+    inputs: Inputs,
+    assign: Dict[Tuple[str, str], int],
+    *,
+    path: str,
+    pair_order_seed: int | None = None
+) -> str:
     slot_ids = [s.id for s in inputs.slots]
     iv_by_id: Dict[str, Interviewer] = {iv.id: iv for iv in inputs.interviewers}
     cap_pairs = inputs.max_pairs_per_slot
@@ -87,16 +94,36 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
             # Observers are excluded from exported pairing/adcom sheets
             pass
 
+    # Build stable pair tuples per slot from regular assignments, with optional seeded
+    # 50/50 intra-pair order swap.
+    rng = random.Random(pair_order_seed)
+    pairs_by_t: Dict[str, List[Tuple[str, str]]] = {t: [] for t in slot_ids}
+    for t in slot_ids:
+        regs = regs_by_t[t]  # preserve assignment/insertion order
+        for k in range(0, len(regs) - 1, 2):
+            a, b = regs[k], regs[k + 1]
+            if rng.random() < 0.5:
+                a, b = b, a
+            pairs_by_t[t].append((a, b))
+
     # 1) Regular_Interviewers (two rows per pair)
     regular_rows = []
     for t in slot_ids:
-        regs = regs_by_t[t]  # <- keep solver/insertion order; don't alphabetize
-        pair_idx = 1
-        for k in range(0, len(regs), 2):
-            regular_rows.append({"Date_Time": t, "Pair": pair_idx, "Interview": regs[k], "Interviewer_Type": "Regular"})
-            if k+1 < len(regs):
-                regular_rows.append({"Date_Time": t, "Pair": pair_idx, "Interview": regs[k+1], "Interviewer_Type": "Regular"})
-            pair_idx += 1
+        for pair_idx, (a, b) in enumerate(pairs_by_t[t], start=1):
+            regular_rows.append({"Date_Time": t, "Pair": pair_idx, "Interview": a, "Interviewer_Type": "Regular"})
+            regular_rows.append({"Date_Time": t, "Pair": pair_idx, "Interview": b, "Interviewer_Type": "Regular"})
+
+    regular_pair_labels_by_t: Dict[str, List[str]] = {t: [] for t in slot_ids}
+    for t in slot_ids:
+        rows_t = [r for r in regular_rows if r["Date_Time"] == t]
+        by_pair: Dict[int, List[str]] = {}
+        for r in rows_t:
+            by_pair.setdefault(r["Pair"], []).append(r["Interview"])
+        for pair_idx in sorted(by_pair):
+            names = by_pair[pair_idx]
+            if len(names) == 2:
+                regular_pair_labels_by_t[t].append(f"{names[0]} & {names[1]}")
+
     df_regular = pd.DataFrame(regular_rows)
     if not df_regular.empty:
         df_regular = df_regular.sort_values(
@@ -137,6 +164,13 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
             "Total_Assignments": total
         })
     df_totals = pd.DataFrame(totals_rows)
+    if not df_totals.empty:
+        type_order = {"Regular": 0, "Adcom": 1}
+        df_totals = (
+            df_totals.assign(_type_sort=df_totals["Interviewer_Type"].map(lambda x: type_order.get(x, 99)))
+            .sort_values(by=["_type_sort", "Interviewer_Name"], kind="stable")
+            .drop(columns=["_type_sort"])
+        )
 
     # 5) Slot_Summary (pairs + adcom singles)
     slots_rows = []
@@ -165,13 +199,9 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
         row = {k: "" for k in col_names}
         row["Date_Time"] = t
 
-        # Build ordered room list: pairs first (A & B), then Adcom singles
-        regs = sorted(regs_by_t[t])
-        pairs = []
-        for k in range(0, len(regs), 2):
-            nameA = regs[k]
-            nameB = regs[k+1] if k+1 < len(regs) else ""
-            pairs.append((f"{nameA} & {nameB}").strip(" & "))
+        # Build ordered room list directly from Regular_Interviewers-derived
+        # labels, then append Adcom singles.
+        pairs = regular_pair_labels_by_t[t]
         adcoms = sorted(adcom_by_t[t])
 
         rooms = pairs + adcoms  # pairs in Slot 1..p, then adcom singles
@@ -181,6 +211,23 @@ def make_excel_report(inputs: Inputs, assign: Dict[Tuple[str, str], int], *, pat
     df_ap = pd.DataFrame(ap_rows, columns=col_names)
     if not df_ap.empty:
         df_ap = df_ap.sort_values(by=["Date_Time"], key=lambda col: col.map(_sort_key))
+
+    # Consistency check: pair labels reconstructed from Regular_Interviewers must
+    # match Assigned_Pairs pair slot labels for each time slot.
+    assigned_pair_labels_by_t: Dict[str, List[str]] = {}
+    for row in ap_rows:
+        t = row["Date_Time"]
+        pair_labels = []
+        for idx in range(1, len(regular_pair_labels_by_t[t]) + 1):
+            label = row.get(f"Slot {idx}", "")
+            if label:
+                pair_labels.append(label)
+        assigned_pair_labels_by_t[t] = pair_labels
+    for t in slot_ids:
+        assert regular_pair_labels_by_t[t] == assigned_pair_labels_by_t[t], (
+            f"Pair label mismatch at {t}: "
+            f"{regular_pair_labels_by_t[t]} != {assigned_pair_labels_by_t[t]}"
+        )
 
     # Write Excel
     dirpath = os.path.dirname(path)
