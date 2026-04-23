@@ -452,7 +452,7 @@ inputs = Inp(
 if "inputs_for_results" not in st.session_state:
     st.session_state["inputs_for_results"] = inputs
 
-# 4-stage flow container
+# 3-stage flow container
 flow = st.container(border=True)
 with flow:
     st.markdown("## Scheduler flow")
@@ -514,7 +514,7 @@ with flow:
 # -----------------------------------
 # 3) Solve (persistent results view)
 # -----------------------------------
-st.markdown("### Stage D: Run scheduler with selected/default settings")
+st.markdown("### Stage C: Run scheduler with selected/default settings")
 
 # Run button FIRST so we can clear stale state in the same render
 run_clicked = st.button("Run scheduler", type="primary")
