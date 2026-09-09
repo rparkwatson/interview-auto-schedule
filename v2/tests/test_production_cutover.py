@@ -17,7 +17,7 @@ def _requirement_lines(path: Path) -> list[str]:
     ]
 
 
-def test_production_launcher_calls_v2_main():
+def test_production_launcher_registers_only_hidden_v2_page():
     launcher_path = REPOSITORY_ROOT / "app.py"
     tree = ast.parse(launcher_path.read_text(encoding="utf-8"))
 
@@ -27,19 +27,37 @@ def test_production_launcher_calls_v2_main():
         and any(alias.name == "main" for alias in node.names)
         for node in tree.body
     )
-    calls_main = any(
-        isinstance(node, ast.If)
-        and any(
-            isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Name)
-            and child.func.id == "main"
-            for child in ast.walk(node)
-        )
-        for node in tree.body
-    )
+    page_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "st"
+        and node.func.attr == "Page"
+    ]
+    navigation_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "st"
+        and node.func.attr == "navigation"
+    ]
 
     assert imports_v2_main
-    assert calls_main
+    assert len(page_calls) == 1
+    assert isinstance(page_calls[0].args[0], ast.Name)
+    assert page_calls[0].args[0].id == "main"
+    assert len(navigation_calls) == 1
+    position = next(
+        keyword.value
+        for keyword in navigation_calls[0].keywords
+        if keyword.arg == "position"
+    )
+    assert isinstance(position, ast.Constant)
+    assert position.value == "hidden"
 
 
 def test_production_entrypoint_starts_v2_without_exceptions():
