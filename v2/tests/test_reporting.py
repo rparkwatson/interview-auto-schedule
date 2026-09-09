@@ -53,7 +53,7 @@ def test_required_workbook_is_generated_in_memory_with_assignment_contract():
     content = build_workbook(result, problem, config)
 
     assert content.startswith(b"PK")
-    workbook = load_workbook(BytesIO(content), read_only=True, data_only=False)
+    workbook = load_workbook(BytesIO(content), data_only=False)
     assert workbook.sheetnames == list(REQUIRED_SHEETS)
     assignment_sheet = workbook["Assignments"]
     assert [cell.value for cell in assignment_sheet[1]] == [
@@ -69,6 +69,13 @@ def test_required_workbook_is_generated_in_memory_with_assignment_contract():
     ]
     assert assignment_sheet["F2"].value == "Student One"
     assert assignment_sheet["G2"].value == "Student Interviewer"
+    assert assignment_sheet.column_dimensions["A"].width >= 24
+    assert assignment_sheet.column_dimensions["B"].width >= 18
+    assert workbook["Schedule_By_Slot"].column_dimensions["A"].width >= 18
+    assert workbook["Student_only Schedule_by_slot"].column_dimensions["A"].width >= 18
+    assert workbook["Adcom_only Schedule_by_slot"].column_dimensions["A"].width >= 18
+    assert workbook["Slot_Summary"].column_dimensions["A"].width >= 18
+    assert workbook["Constraint_Diagnostics"].column_dimensions["G"].width >= 18
 
     simplified_content = build_simplified_schedule_workbook(result)
     simplified = load_workbook(

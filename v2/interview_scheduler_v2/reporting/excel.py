@@ -31,6 +31,11 @@ REQUIRED_SHEETS = (
 
 SIMPLIFIED_SCHEDULE_SHEET = "Schedule"
 
+_COMMON_COLUMN_WIDTHS = {
+    "Scenario": 24,
+    "Slot ID": 18,
+}
+
 
 def _scenario_stem(scenario: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", str(scenario).strip()).strip("_")
@@ -127,7 +132,11 @@ def _write_table(
     worksheet.freeze_panes(1, 0)
     for column, header in enumerate(headers):
         default_width = max(11, min(28, len(header) + 2))
-        worksheet.set_column(column, column, (widths or {}).get(header, default_width))
+        preferred_width = (widths or {}).get(
+            header,
+            _COMMON_COLUMN_WIDTHS.get(header, default_width),
+        )
+        worksheet.set_column(column, column, preferred_width)
 
 
 def build_simplified_schedule_workbook(result: SolveResult) -> bytes:
