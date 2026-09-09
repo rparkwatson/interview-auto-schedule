@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.deps/
+vendor/
+.tmp_workbook_inspect/
+*.log
+
+# Local configuration and credentials
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+
+# Interviewer source files and locally generated workbooks
+*.xlsx
+*.xls
+*.xlsm
+
+# Runtime-generated reports
+schedule_report.xlsx
+v2/outputs/
