@@ -42,23 +42,24 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: |
+            requirements.txt
             v2/requirements.txt
             v2/requirements-dev.txt
 
-      - name: Install v2 dependencies
-        run: python -m pip install -r v2/requirements-dev.txt
+      - name: Install production dependencies and test tools
+        run: python -m pip install -r requirements.txt "pytest>=8,<9"
 
       - name: Run automated tests
         run: python -m pytest v2/tests -q
 
-      - name: Verify hosted-app startup
+      - name: Verify production-app startup
         shell: bash
         run: |
           set -euo pipefail
-          python -m streamlit run v2/app.py \
+          python -m streamlit run app.py \
             --server.headless true \
             --server.port 8501 \
-            > streamlit-v2.log 2>&1 &
+            > streamlit-production.log 2>&1 &
           app_pid=$!
           cleanup() {
             kill "$app_pid" 2>/dev/null || true
@@ -75,5 +76,5 @@ jobs:
             sleep 1
           done
 
-          cat streamlit-v2.log
+          cat streamlit-production.log
           exit 1
