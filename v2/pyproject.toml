@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview-scheduler-v2"
+version = "0.1.0"
+description = "Single-assignment Student and Adcom interview scheduler"
+requires-python = ">=3.11"
+dependencies = [
+  "streamlit>=1.37,<2",
+  "pandas>=2.1,<4",
+  "openpyxl>=3.1,<4",
+  "xlsxwriter>=3.1,<4",
+  "ortools>=9.9,<10",
+  "tzdata>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["interview_scheduler_v2*"]
