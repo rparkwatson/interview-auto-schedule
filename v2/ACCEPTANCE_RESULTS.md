@@ -1,11 +1,69 @@
-# V2 baseline acceptance results
+# V2 acceptance results
+
+## September 2026 review follow-up
+
+Final regression verification: **2026-09-30**, branch `codex/v2-reliability`.
+Local environment: Windows, Python 3.12.10, OR-Tools 9.15.6755,
+Streamlit 1.62.0. Application version: 0.2.0.
+
+### Automated checks
+
+- **125 passed in 13.18 seconds** using
+  `python -B -m pytest v2/tests -q -p no:cacheprovider`.
+- Added parser cases for noon, midnight, malformed/ambiguous ranges, fractional
+  capacities and targets, nonfinite counts, and pasted worksheet values.
+- UI regressions cover changed recommended/custom rules, a daily maximum of zero,
+  priority, consecutive limits, time budget, schedule name, and interview year.
+  Old downloads and stale exception retries disappear when their inputs change;
+  unrelated reruns retain the same run and downloads.
+- A production-entry-point integration test imports real workbook bytes, edits
+  counts and policies, solves, inspects both generated workbooks, and verifies
+  that a failed replacement import clears the prior run. AppTest's unsupported
+  upload interaction is simulated at the file-uploader boundary.
+- Controlled-clock tests run real CP-SAT models and exercise initial-stage
+  failure, later-stage fallback, deadline exhaustion, shared remaining budgets,
+  and feasible/optimal status reporting.
+- Diagnostic and export tests verify interviewer identity, dates, limiting counts,
+  source paths, stable/sensitive fingerprints, unique run IDs, recorded versions,
+  full person overrides, stage outcomes, and rejection of mismatched report inputs.
+- `git diff --check` passes. Legacy application files were not changed.
+
+### Repeatable synthetic scale check
+
+Collected 2026-09-29 with `python -B -m v2.benchmarks.typical_campaign`.
+The generator uses 65 people (40 Student, 25 Adcom), 150 periods, deterministic
+80% availability, shared capacity/target three, default policies, one worker,
+and a 30-second elapsed-time budget.
+
+| Measure | Result |
+|---|---:|
+| Solve status | Optimal at all four objective stages |
+| Assignments | 350 |
+| Interviewers below minimum | 0 |
+| Discouraged back-to-back pairs | 0 |
+| Target deficit | 100 |
+| Recorded solver wall time | 21.813 seconds |
+
+All capacity, availability, cumulative-limit, and daily-maximum checks passed.
+The 100 unfilled seats are expected: the requested capacity is 450, while the
+combined interviewer maximums allow 350 assignments. Timings are local observations,
+not a guarantee for other hardware or source campaigns.
+
+### Remaining release checks
+
+Linux/Python 3.11 CI will run when the branch is published. Campaign acceptance
+for this release uses the selected 65-person synthetic campaign and both generated
+workbooks. Required GitHub approval and hosted deployment verification are tracked
+on the release pull request; local checks alone do not establish deployment.
+
+## Historical baseline record
 
 Run date: 2026-09-08 (America/New_York)
 
 These checks validate the independent baseline before user acceptance. They do
 not authorize production cutover.
 
-## Automated suite
+### Automated suite
 
 - Result: **62 passed**
 - Coverage: domain invariants, stable IDs, validation, source-role detection,
@@ -19,7 +77,7 @@ not authorize production cutover.
   schedule ordering/capacity/filename/alignment, brand-palette contrast,
   schedule-progress state and accessibility semantics, and Streamlit startup.
 
-## GitHub review-release preparation
+### GitHub review-release preparation
 
 Review date: 2026-09-09 (America/New_York)
 
@@ -45,7 +103,7 @@ $env:PYTHONPATH = "v2"
 python -m pytest v2/tests -q
 ```
 
-## Supplied Winter 2026 examples
+### Supplied Winter 2026 examples
 
 | Measure | Result |
 |---|---:|
@@ -70,7 +128,7 @@ request 240 assignments, while availability plus cumulative/daily maximums cap
 the supplied 28-person roster at 142 new assignments. This is a target shortfall,
 not a violation of minimums, maximums, capacity, or spacing.
 
-## Typical-scale synthetic gate
+### Typical-scale synthetic gate
 
 Configuration: 65 interviewers (40 Student, 25 Adcom), 150 slots, 9,750 binary
 assignment decisions, deterministic 80% availability pattern, shared capacity
@@ -89,7 +147,7 @@ single search worker.
 The target deficit is again bounded by interviewer maximums: requested coverage
 is 450 while aggregate cumulative maxima allow 350 assignments.
 
-## Remaining acceptance work
+### Remaining acceptance work
 
 - User review of the guided workflow and terminology.
 - Manual spot-check of assignments for representative Student and Adcom names.

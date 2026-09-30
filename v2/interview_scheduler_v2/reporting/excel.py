@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import xlsxwriter
 
+from ..audit import fingerprint
 from ..config import SchedulerConfig
 from ..domain import InterviewerGroup, SchedulingProblem
 from ..io.source_parsers import ImportNotice
@@ -254,6 +255,15 @@ def build_workbook(
 ) -> bytes:
     """Return the required report as XLSX bytes without a shared output file."""
 
+    expected_input = result.settings.get("input_sha256")
+    expected_config = result.settings.get("configuration_sha256")
+    if expected_input and expected_input != fingerprint(problem):
+        raise ValueError("The report inputs differ from the solved schedule.")
+    if expected_config and expected_config != fingerprint({
+        "config": config, "relaxation_mode": result.settings["relaxation_mode"],
+    }):
+        raise ValueError("The report configuration differs from the solved schedule.")
+
     output = BytesIO()
     workbook = xlsxwriter.Workbook(
         output,
@@ -404,6 +414,8 @@ def build_workbook(
         "Maximum Overage",
         "Active Days",
         "Maximum Assigned on Day",
+        "Maximum Per Day",
+        "Minimum Per Active Day",
         "Back-to-Back Pairs",
     )
     _write_table(
@@ -427,6 +439,8 @@ def build_workbook(
                 item.maximum_overage,
                 item.active_days,
                 item.maximum_assigned_on_day,
+                item.max_per_day,
+                item.min_per_active_day,
                 item.back_to_back_pairs,
             )
             for item in result.interviewer_summaries
@@ -569,7 +583,7 @@ def build_workbook(
             item.expected,
             item.actual,
             item.message,
-            None,
+            item.path,
         )
         for item in result.diagnostics
     ]
@@ -604,7 +618,7 @@ def build_workbook(
     run_rows: list[tuple[Any, Any]] = [
         ("Scenario", result.scenario),
         ("Status", result.status.value),
-        ("Generated At ET", datetime.now(ZoneInfo("America/New_York")).isoformat()),
+        ("Generated At ET", result.settings.get("generated_at_et") or datetime.now(ZoneInfo("America/New_York")).isoformat()),
         ("Solver Wall Time Seconds", round(result.wall_time_seconds, 3)),
         ("Interviewer Count", len(problem.interviewers)),
         ("Slot Count", len(problem.slots)),
@@ -624,6 +638,15 @@ def build_workbook(
                 (f"{prefix} Minimum Per Active Day", policy.min_per_active_day),
             )
         )
+    people_by_id = {person.id: person for person in problem.interviewers}
+    for person_id, policy in config.person_policies.items():
+        person = people_by_id.get(person_id)
+        prefix = f"Override: {person.name if person else person_id} [{person_id}]"
+        run_rows.extend((f"{prefix} {label}", value) for label, value in (
+            ("Minimum", policy.min_total), ("Target", policy.target_total),
+            ("Maximum", policy.max_total), ("Maximum Per Day", policy.max_per_day),
+            ("Minimum Per Active Day", policy.min_per_active_day),
+        ))
     run_rows.extend((f"Setting: {key}", value) for key, value in result.settings.items())
     run_rows.extend(
         (f"Objective: {key}", value)

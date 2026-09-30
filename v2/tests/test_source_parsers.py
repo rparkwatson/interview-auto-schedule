@@ -3,16 +3,74 @@ from __future__ import annotations
 from io import BytesIO
 
 from openpyxl import Workbook
+import pytest
 
 from interview_scheduler_v2.domain import InterviewerGroup
 from interview_scheduler_v2.io import import_campaign, prepare_campaign_from_availability
 from interview_scheduler_v2.io.source_parsers import (
+    _parse_time_range,
     parse_adcom_availability,
     parse_student_availability,
     parse_student_schedule,
     parse_time_slot_workbook,
     reconcile_availability,
 )
+
+
+@pytest.mark.parametrize(("label", "start", "end"), [
+    ("10:30 - 12:00 pm", "10:30", "12:00"),
+    ("12:00 - 1:30 pm", "12:00", "13:30"),
+    ("11:30 - 1:00 pm", "11:30", "13:00"),
+    ("11:30 - 1:00 am", "23:30", "01:00"),
+    ("10:30 - 12:00 am", "22:30", "00:00"),
+    ("12:00 - 1:30 am", "00:00", "01:30"),
+    ("11:30 am - 1:00", "11:30", "13:00"),
+    ("11:30 pm - 1:00 am", "23:30", "01:00"),
+])
+def test_time_range_inference_handles_noon_and_midnight(label, start, end):
+    parsed = _parse_time_range(label)
+    assert tuple(item.strftime("%H:%M") for item in parsed) == (start, end)
+
+
+@pytest.mark.parametrize("label", [
+    "13:00 pm - 2:00 pm", "0:30 am - 1:00 am", "8:60 am - 9:30 am",
+    "8:00 - 9:30", "8:00 am - 8:00 am", "8:00 - 8:00 pm",
+    "8:00 am - 7:00 am",
+])
+def test_invalid_or_ambiguous_time_ranges_are_rejected(label):
+    with pytest.raises(ValueError):
+        _parse_time_range(label)
+
+
+@pytest.mark.parametrize(("label", "hour", "next_day"), [
+    ("10:30 - 12:00 pm", 10, False),
+    ("12:00 - 1:30 pm", 12, False),
+    ("11:30 - 1:00 am", 23, True),
+])
+def test_student_import_preserves_session_duration(label, hour, next_day):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "1200 PM"
+    sheet.cell(3, 1, label)
+    sheet.cell(4, 1, "Tuesday (2/24)")
+    sheet.cell(5, 1, "Student One")
+    slot = parse_student_schedule(workbook_bytes(workbook), year=2026).slot_set.slots[0]
+    assert slot.start.hour == hour
+    assert (slot.end - slot.start).total_seconds() == 90 * 60
+    assert (slot.end.date() > slot.start.date()) == next_day
+
+
+@pytest.mark.parametrize("column", ["Capacity", "Target"])
+@pytest.mark.parametrize("value", [2.9, 0.9, -0.9, "NaN", "Infinity", True])
+def test_slot_counts_cannot_be_silently_coerced(column, value):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Date_Time", "Capacity", "Target"])
+    sheet.append(["2/24 - 800 AM", value if column == "Capacity" else 3,
+                  value if column == "Target" else 1])
+    parsed = parse_time_slot_workbook(workbook_bytes(workbook), year=2026)
+    assert not parsed.slots
+    assert any(item.code == f"invalid_{column.lower()}" for item in parsed.notices)
 
 
 def workbook_bytes(workbook: Workbook) -> bytes:

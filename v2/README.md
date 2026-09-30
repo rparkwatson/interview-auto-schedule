@@ -11,6 +11,8 @@ The staged GitHub and Streamlit release checks are in
 ## Scheduling contract
 
 - Groups are **Student Interviewer** and **Adcom Interviewer**.
+- The two groups contain different people. Identical display names across groups
+  retain distinct interviewer IDs.
 - Every interviewer assignment consumes one shared slot-capacity unit.
 - Each period has one `Interviews possible` count. It is both the desired staffing
   count and the maximum shared capacity.
@@ -31,6 +33,16 @@ The staged GitHub and Streamlit release checks are in
 
 Historical counts contribute to cumulative totals. The administrative workflow
 does not collect preassigned interviews.
+
+Adcom time ranges are session labels. An exact same-date start is preferred;
+otherwise a unique nearest start within 30 minutes is accepted and recorded as
+a reconciliation notice. The source end time is not an availability cutoff.
+
+Time labels may omit one AM/PM marker: the parser infers the shortest forward
+range under 12 hours, including noon and midnight crossings. Both markers are
+required for a 12-hour range. Zero-length, longer, ambiguous, and malformed
+ranges are rejected. Counts must be finite whole numbers of zero or more;
+fractional values are rejected rather than truncated, including pasted Excel data.
 
 ## Local development
 
@@ -66,9 +78,11 @@ Python 3.11 or newer is required. The production app currently uses Python
 `Interviews possible` is required for each candidate period and is the number the
 scheduler will try to fill. An explicit zero means the period will not be offered
 and removes it from the scheduling model.
-If any Step 2 scheduling information changes after a result is created, the app
-clears that result automatically and keeps a warning visible until the schedule
-is created again.
+Changes to reviewed information, assignment rules, advanced settings, or the
+schedule name clear the previous result, downloads, and exception acknowledgments.
+Changing either source file or the interview year also clears the imported review
+tables and requires a new file check. Each successful import uses fresh editor
+identities, so old table edits cannot be applied to the replacement campaign.
 
 Technical IDs, diagnostic references, and processing details remain available
 inside collapsed sections for troubleshooting and audit work.
@@ -108,6 +122,10 @@ honors reduced-motion preferences.
 - `interview_scheduler_v2/io/` — workbook parsing, period-template generation,
   reconciliation, and campaign assembly
 - `interview_scheduler_v2/validation.py` — structured preflight diagnostics
+- `interview_scheduler_v2/counts.py` — shared lossless count validation
+- `interview_scheduler_v2/review.py` — review-table transformations and model inputs
+- `interview_scheduler_v2/workflow_state.py` — import/result invalidation and review reset
+- `interview_scheduler_v2/audit.py` — canonical fingerprints and run provenance
 - `interview_scheduler_v2/optimization/` — CP-SAT model and result contract
 - `interview_scheduler_v2/presentation/` — plain-language administrative messages
 - `interview_scheduler_v2/presentation/branding.py` — accessible palette,
@@ -133,3 +151,34 @@ unfilled interviews, and gray cells identify groups outside a period's capacity.
 The lower-level import adapter still supports the earlier `Date_Time` /
 `Max_Slot` slot-workbook contract for programmatic compatibility, but the
 administrative Streamlit workflow no longer requests that third source file.
+
+## Solver budget and audit trail
+
+All objective stages share one elapsed-time deadline. Each stage can use the
+remaining budget; an early optimum leaves more time for subsequent stages. If
+a later stage times out, the last feasible assignment set is retained and marked
+**feasible**, never optimal. Optimal status requires proof at every objective.
+The budget includes validation and model construction; report generation is
+separate, and solver termination is cooperative rather than a hard process kill.
+
+`Run_Settings` records a stable run ID/time, application and dependency versions,
+package-source hash, effective-input and configuration hashes, complete group and
+person policies, and each attempted objective's status, budget, duration, value,
+and bound. UI runs also record SHA-256 hashes of both uploaded workbooks. Input
+hashes include availability, preferences, history, ordered slots, and locks;
+configuration hashes include exception mode. Keep the source files and reviewed
+inputs to reproduce a run: hashes identify them but do not replace their contents.
+
+`Interviewer_Summary` includes daily maximum and active-day minimum settings.
+Diagnostics retain names, groups, source paths, and relevant counts. Report
+generation checks that its inputs and configuration match the solved result.
+Both download filenames use the recorded run time, including after UI reruns.
+
+Run the repeatable synthetic scale check (65 people, 150 periods) from the root:
+
+```powershell
+python -m v2.benchmarks.typical_campaign --time-limit 30
+```
+
+This prints measurements and checks capacity, availability, cumulative limits,
+and daily maximums. It is an acceptance check rather than a timing-sensitive CI test.

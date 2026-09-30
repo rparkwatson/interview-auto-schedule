@@ -558,18 +558,22 @@ def present_diagnostics(
                 )
             )
         elif code == "TARGET_DEMAND_EXCEEDS_ASSIGNABLE_MAXIMUM":
-            # Validation context is flattened when it becomes a solver
-            # diagnostic. Recover the three useful counts when they are present,
-            # while keeping the original text only in the detail view.
-            count_match = re.search(
-                r"target demand\s+(\d+).*?upper bound\s+(\d+).*?at least\s+(\d+)",
-                first.message,
-                flags=re.IGNORECASE,
-            )
-            if count_match:
-                requested, possible, shortfall = (
-                    int(value) for value in count_match.groups()
+            context = first.context
+            # Older callers may supply only a message. Prefer structured counts
+            # while retaining the existing public presentation contract.
+            if "target_demand" not in context:
+                match = re.search(
+                    r"target demand\s+(\d+).*?upper bound\s+(\d+).*?at least\s+(\d+)",
+                    first.message, flags=re.IGNORECASE,
                 )
+                if match:
+                    requested, possible, shortfall = map(int, match.groups())
+                    context = {"target_demand": requested, "assignable_upper_bound": possible,
+                               "unavoidable_target_deficit": shortfall}
+            if "target_demand" in context:
+                requested = context["target_demand"]
+                possible = context["assignable_upper_bound"]
+                shortfall = context["unavoidable_target_deficit"]
                 summary = (
                     f"You requested {requested} interview assignments. Current "
                     f"availability and assignment limits allow up to {possible}, "
