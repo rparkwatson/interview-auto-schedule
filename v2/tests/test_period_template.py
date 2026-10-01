@@ -132,3 +132,18 @@ def test_period_template_filename_is_scenario_specific():
         period_template_filename("Winter 2026 / Round 2")
         == "Winter_2026_Round_2_interview_periods.xlsx"
     )
+
+
+@pytest.mark.parametrize("capacity", [2.9, 0.9, -0.9])
+def test_period_template_rejects_pasted_fractional_counts(capacity):
+    slots = candidate_slots()
+    workbook = load_workbook(BytesIO(completed_template_bytes(
+        build_interview_period_template(slots, scenario="Counts")
+    )))
+    workbook["Interview Periods"]["F5"] = capacity
+    output = BytesIO()
+    workbook.save(output)
+    with pytest.raises(PeriodTemplateError):
+        parse_completed_interview_period_template(
+            output.getvalue(), expected_slots=slots, year=2026
+        )

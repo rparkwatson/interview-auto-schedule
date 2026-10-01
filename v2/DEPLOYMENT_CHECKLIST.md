@@ -1,5 +1,27 @@
 # Interview Scheduler v2 deployment checklist
 
+## Reliability update release (September 2026)
+
+The v2 cutover is already present in `main`: root `app.py` launches v2 and hides
+legacy navigation. The original migration checklist below is historical and
+must not be used to roll this reliability update back to the legacy scheduler.
+
+- [ ] Review the `codex/v2-reliability` pull request and satisfy applicable GitHub
+      branch rules, including required review approval.
+- [ ] Pass the v2 test suite and production startup check on Linux/Python 3.11.
+- [x] Run the 65-person, 150-period synthetic campaign selected for this release;
+      verify hard constraints and agreement between full and simplified reports.
+- [ ] Confirm the hosted app's source branch and entry point before merge.
+- [ ] Merge the reviewed change into `main` and verify the deployed app.
+- [ ] On the hosted app, exercise imports, count entry, a strict solve, both
+      downloads, and invalidation after a rule change using synthetic data.
+
+Rollback for this update: revert its merge commit through a new pull request,
+then verify the previous v2 release. Preserve the existing deployment and legacy
+files; no original-cutover reversal is needed.
+
+## Historical v2 migration checklist
+
 This checklist keeps the current scheduler available while v2 is reviewed and
 approved. Do not delete or reconfigure the production Streamlit app during the
 review release.

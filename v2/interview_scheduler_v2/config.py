@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 from types import MappingProxyType
 from typing import Mapping
 
@@ -93,8 +94,8 @@ class SchedulerConfig:
             raise ValueError("max_consecutive_slots must be at least 1")
         if self.student_priority_weight < 1:
             raise ValueError("student_priority_weight must be at least 1")
-        if self.time_limit_seconds <= 0:
-            raise ValueError("time_limit_seconds must be positive")
+        if not isfinite(self.time_limit_seconds) or self.time_limit_seconds <= 0:
+            raise ValueError("time_limit_seconds must be finite and positive")
         if self.num_search_workers < 1:
             raise ValueError("num_search_workers must be at least 1")
 

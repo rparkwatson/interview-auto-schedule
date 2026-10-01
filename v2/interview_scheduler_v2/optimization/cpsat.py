@@ -6,10 +6,11 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
 from time import perf_counter
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from ortools.sat.python import cp_model
 
+from ..audit import canonical_json, run_provenance
 from ..config import (
     DEFAULT_CONFIG,
     BackToBackPolicy,
@@ -67,7 +68,13 @@ def _diagnostic_from_validation(issue: ValidationIssue) -> ConstraintDiagnostic:
         message=issue.message,
         constraint=issue.family.value,
         interviewer_id=issue.context.get("interviewer_id"),
+        interviewer_name=issue.context.get("interviewer_name"),
+        group=InterviewerGroup(issue.context["group"]) if issue.context.get("group") else None,
         slot_id=issue.context.get("slot_id"),
+        assignment_date=(date.fromisoformat(issue.context["assignment_date"])
+                         if issue.context.get("assignment_date") else None),
+        path=issue.path,
+        context=issue.context,
         expected=issue.context.get("expected"),
         actual=issue.context.get("actual"),
     )
@@ -98,6 +105,8 @@ def solve(
     cfg = config or DEFAULT_CONFIG
     relaxation_mode = RelaxationMode(relaxation_mode)
     scenario = str(scenario).strip() or "Scenario"
+    deadline = started + cfg.time_limit_seconds
+    run_settings = _settings(cfg, relaxation_mode, problem)
     validation = validate_problem(problem, cfg)
     fatal_errors = tuple(
         issue
@@ -111,7 +120,7 @@ def solve(
             diagnostics=tuple(_diagnostic_from_validation(i) for i in validation.issues),
             wall_time_seconds=perf_counter() - started,
             message="Inputs contain validation errors that cannot be scheduled.",
-            settings=_settings(cfg, relaxation_mode),
+            settings=run_settings,
         )
 
     model = cp_model.CpModel()
@@ -378,15 +387,31 @@ def solve(
     last_status = cp_model.UNKNOWN
     all_stages_optimal = True
     objective_metrics: dict[str, int | float] = {}
-    time_per_stage = max(0.25, cfg.time_limit_seconds / max(1, len(stages)))
+    stage_records: list[dict[str, Any]] = []
 
-    for stage_name, expression in stages:
-        model.Minimize(expression)
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = time_per_stage
-        solver.parameters.random_seed = cfg.random_seed
-        solver.parameters.num_search_workers = cfg.num_search_workers
-        last_status = solver.Solve(model)
+    # Early objectives may use the entire remaining budget. Proven optima often
+    # finish quickly, leaving their unused time for subsequent objectives.
+    for stage_name, expression in stages or [("feasibility", None)]:
+        if expression is not None:
+            model.Minimize(expression)
+        remaining = deadline - perf_counter()
+        stage_started = perf_counter()
+        if remaining <= 0:
+            last_status = cp_model.UNKNOWN
+            record = {"stage": stage_name, "status": "SKIPPED_TIME_LIMIT", "budget_seconds": 0.0}
+        else:
+            solver = cp_model.CpSolver()
+            solver.parameters.max_time_in_seconds = remaining
+            solver.parameters.random_seed = cfg.random_seed
+            solver.parameters.num_search_workers = cfg.num_search_workers
+            last_status = solver.Solve(model)
+            record = {"stage": stage_name, "status": solver.StatusName(last_status),
+                      "budget_seconds": remaining}
+            if last_status in (cp_model.OPTIMAL, cp_model.FEASIBLE) and expression is not None:
+                record.update(objective=solver.ObjectiveValue(), best_bound=solver.BestObjectiveBound())
+        record["elapsed_seconds"] = perf_counter() - stage_started
+        stage_records.append(record)
+        run_settings["solver_stages_json"] = canonical_json(stage_records)
         if last_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             status = _status(last_status, False)
             if best_values is not None and status is SolveStatus.UNKNOWN:
@@ -401,6 +426,7 @@ def solve(
                     value_of=lambda variable: best_values[variable.Index()],
                     status=SolveStatus.FEASIBLE,
                     objective_metrics=objective_metrics,
+                    run_settings=run_settings,
                     wall_time_seconds=perf_counter() - started,
                     people_by_id=people_by_id,
                     slots_by_id=slots_by_id,
@@ -415,7 +441,7 @@ def solve(
                 scenario=scenario,
                 diagnostics=diagnostics,
                 objective_metrics=objective_metrics,
-                settings=_settings(cfg, relaxation_mode),
+                settings=run_settings,
                 wall_time_seconds=perf_counter() - started,
                 message=(
                     "No schedule satisfies the selected hard constraints. "
@@ -425,7 +451,8 @@ def solve(
                 ),
             )
         optimum = int(round(solver.ObjectiveValue()))
-        objective_metrics[stage_name] = optimum
+        if expression is not None:
+            objective_metrics[stage_name] = optimum
         all_stages_optimal = all_stages_optimal and last_status == cp_model.OPTIMAL
         best_values = {
             index: int(
@@ -433,14 +460,11 @@ def solve(
             )
             for index in range(len(model.Proto().variables))
         }
-        model.Add(expression == optimum)
+        if expression is not None:
+            model.Add(expression == optimum)
         model.ClearHints()
         for index, value in best_values.items():
             model.AddHint(model.GetIntVarFromProtoIndex(index), value)
-
-    if solver is None:
-        solver = cp_model.CpSolver()
-        last_status = solver.Solve(model)
 
     return _build_result(
         problem=problem,
@@ -452,6 +476,7 @@ def solve(
         value_of=solver.Value,
         status=_status(last_status, all_stages_optimal),
         objective_metrics=objective_metrics,
+        run_settings=run_settings,
         wall_time_seconds=perf_counter() - started,
         people_by_id=people_by_id,
         slots_by_id=slots_by_id,
@@ -462,8 +487,10 @@ def solve(
 def _settings(
     cfg: SchedulerConfig,
     relaxation_mode: RelaxationMode,
-) -> dict[str, int | float | str]:
+    problem: SchedulingProblem,
+) -> dict[str, Any]:
     return {
+        **run_provenance(problem, cfg, relaxation_mode),
         "relaxation_mode": relaxation_mode.value,
         "student_priority_weight": cfg.student_priority_weight,
         "back_to_back_policy": cfg.back_to_back.value,
@@ -486,6 +513,7 @@ def _build_result(
     value_of: Callable[[cp_model.IntVar], int],
     status: SolveStatus,
     objective_metrics: dict[str, int | float],
+    run_settings: dict[str, Any],
     wall_time_seconds: float,
     people_by_id: dict,
     slots_by_id: dict,
@@ -527,7 +555,7 @@ def _build_result(
                 code="SOLUTION_NOT_PROVEN_OPTIMAL",
                 message=(
                     f"The prior feasible schedule was retained when quality stage "
-                    f"{fallback_stage!r} reached its time slice."
+                    f"{fallback_stage!r} reached the shared time limit."
                     if fallback_stage
                     else "A feasible schedule was returned before optimality was proven."
                 ),
@@ -567,6 +595,7 @@ def _build_result(
             target=policy.target_total,
             maximum=policy.max_total,
             max_per_day=policy.max_per_day,
+            min_per_active_day=policy.min_per_active_day,
             minimum_shortfall=minimum_shortfall,
             target_shortfall=target_shortfall,
             maximum_overage=maximum_overage,
@@ -749,7 +778,7 @@ def _build_result(
         slot_summaries=tuple(slot_summaries),
         diagnostics=tuple(diagnostics),
         objective_metrics=objective_metrics,
-        settings=_settings(cfg, relaxation_mode),
+        settings=run_settings,
         wall_time_seconds=wall_time_seconds,
         message=message,
     )

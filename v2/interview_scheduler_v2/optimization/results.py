@@ -50,6 +50,7 @@ class InterviewerSummary:
     active_days: int
     maximum_assigned_on_day: int
     back_to_back_pairs: int
+    min_per_active_day: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,11 @@ class ConstraintDiagnostic:
     assignment_date: date | None = None
     expected: int | str | None = None
     actual: int | str | None = None
+    path: str | None = None
+    context: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "context", MappingProxyType(dict(self.context)))
 
 
 @dataclass(frozen=True, slots=True)

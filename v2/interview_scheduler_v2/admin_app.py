@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -12,10 +13,8 @@ import streamlit as st
 
 from .config import BackToBackPolicy, GroupPolicy, RelaxationMode, SchedulerConfig
 from .domain import (
-    Interviewer,
     InterviewerGroup,
     SchedulingProblem,
-    Slot,
 )
 from .io import (
     CampaignImportResult,
@@ -48,10 +47,21 @@ from .reporting import (
     scenario_filename,
     simplified_schedule_filename,
 )
+from .review import (
+    GROUP_BY_LABEL,
+    _availability_counts,
+    _frames_differ,
+    _merge_people_review,
+    _people_frame,
+    _period_setup_issues,
+    _period_setup_totals,
+    _replace_period_counts,
+    _reviewed_problem_and_config,
+    _slot_frame,
+)
 from .validation import ValidationReport, validate_problem
+from .workflow_state import invalidate_import, invalidate_result, reset_review
 
-
-GROUP_BY_LABEL = {group.label: group for group in InterviewerGroup}
 EXCEPTION_OPTIONS = {
     "Allow assignments below required minimums": RelaxationMode.MINIMUMS,
     "Allow assignments above maximum limits": RelaxationMode.MAXIMUMS,
@@ -69,190 +79,34 @@ CONSECUTIVE_OPTIONS = {
 }
 
 
-def _present(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        return not bool(pd.isna(value))
-    except (TypeError, ValueError):
-        return True
-
-
-def _integer(value: Any, default: int = 0) -> int:
-    if not _present(value) or str(value).strip() == "":
-        return default
-    return int(value)
-
-
-def _text(value: Any) -> str:
-    return str(value).strip() if _present(value) else ""
-
-
-def _people_frame(imported: CampaignImportResult) -> pd.DataFrame:
-    defaults = SchedulerConfig().group_policies
-    rows: list[dict[str, Any]] = []
-    for person in imported.problem.interviewers:
-        policy = defaults[person.group]
-        rows.append(
-            {
-                "Enabled": True,
-                "Interviewer ID": person.id,
-                "Interviewer Name": person.name,
-                "Group": person.group.label,
-                "Availability Slots": len(person.available_slot_ids),
-                "Historical Count": person.historical_prior_count,
-                "Use Group Defaults": True,
-                "Minimum": policy.min_total,
-                "Target": policy.target_total,
-                "Maximum": policy.max_total,
-                "Maximum Per Day": policy.max_per_day,
-                "Minimum Per Active Day": policy.min_per_active_day,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _availability_counts(
-    imported: CampaignImportResult,
-) -> tuple[dict[str, int], dict[str, int]]:
-    student_counts = {slot.id: 0 for slot in imported.problem.slots}
-    adcom_counts = {slot.id: 0 for slot in imported.problem.slots}
-    for person in imported.problem.interviewers:
-        destination = (
-            student_counts
-            if person.group is InterviewerGroup.STUDENT
-            else adcom_counts
-        )
-        for slot_id in person.available_slot_ids:
-            if slot_id in destination:
-                destination[slot_id] += 1
-    return student_counts, adcom_counts
-
-
-def _slot_frame(imported: CampaignImportResult) -> pd.DataFrame:
-    student_counts, adcom_counts = _availability_counts(imported)
-    return pd.DataFrame(
-        [
-            {
-                "Slot ID": slot.id,
-                "Interview Period": format_interview_period(slot.start, slot.end),
-                "Start": slot.start,
-                "End": slot.end,
-                "Capacity": (
-                    None if imported.periods_need_configuration else slot.capacity
-                ),
-                "Student Available": student_counts.get(slot.id, 0),
-                "Adcom Available": adcom_counts.get(slot.id, 0),
-                "Student Target": None,
-                "Adcom Target": None,
-            }
-            for slot in imported.problem.slots
-        ]
-    )
-
-
-def _clear_schedule_outputs() -> None:
-    for key in (
-        "v2_problem",
-        "v2_config",
-        "v2_validation",
-        "v2_result",
-        "v2_report",
-        "v2_simplified_report",
-        "v2_download_reviewed",
-        "v2_exception_confirmed",
-    ):
-        st.session_state.pop(key, None)
-
-
-def _frame_value(value: Any) -> Any:
-    """Normalize editor values so harmless dtype changes do not count as edits."""
-
-    if not _present(value):
-        return None
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except (TypeError, ValueError):
-            pass
-    return value
-
-
-def _frame_signature(frame: pd.DataFrame) -> tuple[Any, ...]:
-    return (
-        tuple(str(column) for column in frame.columns),
-        tuple(
-            tuple(_frame_value(value) for value in row)
-            for row in frame.itertuples(index=False, name=None)
-        ),
-    )
-
-
-def _frames_differ(left: pd.DataFrame, right: pd.DataFrame) -> bool:
-    return _frame_signature(left) != _frame_signature(right)
-
-
 def _invalidate_result_after_edit(*, changed: bool, reason: str) -> bool:
     """Clear stale scheduling output and remember why it was cleared."""
 
     if not changed:
         return False
-    had_result = st.session_state.get("v2_result") is not None
-    _clear_schedule_outputs()
-    if had_result:
-        st.session_state["v2_stale_result_notice"] = reason
+    cleared = invalidate_result(st.session_state, reason=reason)
+    if cleared:
         st.toast("Previous scheduling result cleared.")
-    return had_result
+    return cleared
+
+
+def _rules_changed() -> None:
+    _invalidate_result_after_edit(changed=True, reason="The scheduling rules changed.")
+
+
+def _sources_changed() -> None:
+    invalidate_import(st.session_state)
+
+
+def _scenario_changed() -> None:
+    st.session_state["v2_scenario"] = st.session_state["v2_scenario_input"].strip() or "Schedule"
+    _invalidate_result_after_edit(changed=True, reason="The schedule name changed.")
 
 
 def _initialize_review(imported: CampaignImportResult) -> None:
     st.session_state["v2_people"] = _people_frame(imported)
     st.session_state["v2_slots"] = _slot_frame(imported)
-    st.session_state["v2_slot_editor_revision"] = 0
-    st.session_state["v2_period_upload_revision"] = 0
-    _clear_schedule_outputs()
-    st.session_state.pop("v2_stale_result_notice", None)
-
-
-def _period_setup_issues(frame: pd.DataFrame) -> list[str]:
-    """Return plain-language blockers for the interview-count setup."""
-
-    if frame.empty:
-        return ["No interview periods were found."]
-    blank_count = 0
-    invalid_count = 0
-    offered_count = 0
-    for _, row in frame.iterrows():
-        capacity_value = row.get("Capacity")
-        if not _present(capacity_value) or str(capacity_value).strip() == "":
-            blank_count += 1
-            continue
-        try:
-            capacity_number = float(capacity_value)
-        except (TypeError, ValueError):
-            invalid_count += 1
-            continue
-        if capacity_number < 0 or not capacity_number.is_integer():
-            invalid_count += 1
-            continue
-        capacity = int(capacity_number)
-        if capacity > 0:
-            offered_count += 1
-
-    issues: list[str] = []
-    if blank_count:
-        issues.append(
-            f"Enter Interviews possible for {blank_count} remaining period"
-            f"{'s' if blank_count != 1 else ''}."
-        )
-    if invalid_count:
-        issues.append(
-            f"Correct {invalid_count} count value{'s' if invalid_count != 1 else ''}; "
-            "counts must be whole numbers of zero or more."
-        )
-    if not blank_count and not invalid_count and offered_count == 0:
-        issues.append("Offer at least one interview period by entering 1 or more.")
-    return issues
+    reset_review(st.session_state)
 
 
 def _current_schedule_journey():
@@ -309,91 +163,6 @@ def _show_section_anchor(anchor_id: str) -> None:
     )
 
 
-def _period_setup_totals(frame: pd.DataFrame) -> tuple[int, int, int]:
-    configured = 0
-    offered = 0
-    interviews_possible = 0
-    for _, row in frame.iterrows():
-        if not _present(row.get("Capacity")):
-            continue
-        try:
-            capacity = int(row.get("Capacity"))
-        except (TypeError, ValueError):
-            continue
-        configured += 1
-        if capacity > 0:
-            offered += 1
-        interviews_possible += max(0, capacity)
-    return configured, offered, interviews_possible
-
-
-def _replace_period_counts(
-    frame: pd.DataFrame,
-    parsed_slots: Any,
-) -> pd.DataFrame:
-    counts = {slot.id: slot for slot in parsed_slots}
-    updated = frame.copy()
-    for row_index, row in updated.iterrows():
-        slot = counts.get(_text(row.get("Slot ID")))
-        if slot is None:
-            continue
-        updated.at[row_index, "Capacity"] = slot.capacity
-    return updated
-
-
-def _merge_people_review(
-    current: pd.DataFrame,
-    reviewed: pd.DataFrame,
-) -> pd.DataFrame:
-    """Merge the short administrative table into the full policy table."""
-
-    existing = {
-        _text(row.get("Interviewer ID")): row.to_dict()
-        for _, row in current.iterrows()
-        if _text(row.get("Interviewer ID"))
-    }
-    defaults = SchedulerConfig().group_policies
-    rows: list[dict[str, Any]] = []
-    for _, reviewed_row in reviewed.iterrows():
-        interviewer_id = _text(reviewed_row.get("Interviewer ID"))
-        name = _text(reviewed_row.get("Interviewer Name"))
-        group_label = _text(reviewed_row.get("Group"))
-        group = GROUP_BY_LABEL.get(group_label, InterviewerGroup.ADCOM)
-        if not interviewer_id and name:
-            interviewer_id = Interviewer.create(name=name, group=group).id
-        policy = defaults[group]
-        base = existing.get(
-            interviewer_id,
-            {
-                "Enabled": True,
-                "Interviewer ID": interviewer_id or None,
-                "Interviewer Name": name or None,
-                "Group": group.label,
-                "Availability Slots": 0,
-                "Historical Count": 0,
-                "Use Group Defaults": True,
-                "Minimum": policy.min_total,
-                "Target": policy.target_total,
-                "Maximum": policy.max_total,
-                "Maximum Per Day": policy.max_per_day,
-                "Minimum Per Active Day": policy.min_per_active_day,
-            },
-        ).copy()
-        for column in (
-            "Enabled",
-            "Interviewer ID",
-            "Interviewer Name",
-            "Group",
-            "Availability Slots",
-            "Historical Count",
-        ):
-            if column in reviewed_row:
-                base[column] = reviewed_row[column]
-        base["Interviewer ID"] = interviewer_id or base.get("Interviewer ID")
-        rows.append(base)
-    return pd.DataFrame(rows, columns=current.columns)
-
-
 def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy:
     st.markdown(f"**{label}**")
     first, second, third, fourth = st.columns(4)
@@ -403,6 +172,7 @@ def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy
         value=defaults.min_total,
         step=1,
         key=f"{key}_min",
+        on_change=_rules_changed,
         help=(
             "The fewest total interviews each person should have, including "
             "interviews already assigned."
@@ -414,6 +184,7 @@ def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy
         value=defaults.target_total,
         step=1,
         key=f"{key}_target",
+        on_change=_rules_changed,
         help="The total the scheduler should aim for when enough openings are available.",
     )
     maximum = third.number_input(
@@ -422,6 +193,7 @@ def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy
         value=defaults.max_total,
         step=1,
         key=f"{key}_max",
+        on_change=_rules_changed,
         help=(
             "The most total interviews a person should have, including interviews "
             "already assigned."
@@ -433,6 +205,7 @@ def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy
         value=defaults.max_per_day,
         step=1,
         key=f"{key}_day_max",
+        on_change=_rules_changed,
     )
     minimum_active_day = st.number_input(
         "Minimum on a day when assigned",
@@ -440,6 +213,7 @@ def _policy_controls(label: str, defaults: GroupPolicy, key: str) -> GroupPolicy
         value=defaults.min_per_active_day,
         step=1,
         key=f"{key}_day_min",
+        on_change=_rules_changed,
         help=(
             "Leave this at zero unless anyone scheduled that day must receive more "
             "than one interview."
@@ -498,108 +272,6 @@ def _show_file_checks(imported: CampaignImportResult) -> None:
     )
 
 
-def _reviewed_problem_and_config(
-    imported: CampaignImportResult,
-    people_frame: pd.DataFrame,
-    slot_frame: pd.DataFrame,
-    *,
-    student_defaults: GroupPolicy,
-    adcom_defaults: GroupPolicy,
-    student_priority_weight: int,
-    back_to_back: BackToBackPolicy,
-    maximum_consecutive: int,
-    time_limit_seconds: float,
-) -> tuple[SchedulingProblem, SchedulerConfig]:
-    original_slots = {slot.id: slot for slot in imported.problem.slots}
-    slots: list[Slot] = []
-    for _, row in slot_frame.iterrows():
-        slot_id = _text(row.get("Slot ID", ""))
-        source_slot = original_slots.get(slot_id)
-        if source_slot is None:
-            continue
-        capacity = _integer(row.get("Capacity"))
-        # An explicit zero means that this candidate period is not being offered.
-        if capacity == 0:
-            continue
-        group_targets: dict[InterviewerGroup, int] = {}
-        if _present(row.get("Student Target")):
-            group_targets[InterviewerGroup.STUDENT] = _integer(
-                row.get("Student Target")
-            )
-        if _present(row.get("Adcom Target")):
-            group_targets[InterviewerGroup.ADCOM] = _integer(
-                row.get("Adcom Target")
-            )
-        slots.append(
-            replace(
-                source_slot,
-                capacity=capacity,
-                target=capacity,
-                group_targets=group_targets,
-            )
-        )
-
-    active_slot_ids = {slot.id for slot in slots}
-    original_people = {person.id: person for person in imported.problem.interviewers}
-    interviewers: list[Interviewer] = []
-    person_policies: dict[str, GroupPolicy] = {}
-    for _, row in people_frame.iterrows():
-        if not bool(row.get("Enabled", True)):
-            continue
-        name = _text(row.get("Interviewer Name", ""))
-        group = GROUP_BY_LABEL.get(_text(row.get("Group", "")))
-        if not name or group is None:
-            continue
-        explicit_id = _text(row.get("Interviewer ID", "")) or None
-        source_person = original_people.get(explicit_id or "")
-        available = (
-            source_person.available_slot_ids & active_slot_ids
-            if source_person
-            else frozenset()
-        )
-        preferences = (
-            {
-                slot_id: score
-                for slot_id, score in source_person.preference_by_slot.items()
-                if slot_id in active_slot_ids
-            }
-            if source_person
-            else {}
-        )
-        person = Interviewer.create(
-            name=name,
-            group=group,
-            explicit_id=explicit_id,
-            available_slot_ids=available,
-            historical_prior_count=_integer(row.get("Historical Count")),
-            preference_by_slot=preferences,
-        )
-        interviewers.append(person)
-        if not bool(row.get("Use Group Defaults", True)):
-            person_policies[person.id] = GroupPolicy(
-                min_total=_integer(row.get("Minimum")),
-                target_total=_integer(row.get("Target")),
-                max_total=_integer(row.get("Maximum")),
-                max_per_day=_integer(row.get("Maximum Per Day")),
-                min_per_active_day=_integer(row.get("Minimum Per Active Day")),
-            )
-
-    config = SchedulerConfig(
-        group_policies={
-            InterviewerGroup.STUDENT: student_defaults,
-            InterviewerGroup.ADCOM: adcom_defaults,
-        },
-        person_policies=person_policies,
-        back_to_back=back_to_back,
-        max_consecutive_slots=maximum_consecutive,
-        student_priority_weight=student_priority_weight,
-        time_limit_seconds=time_limit_seconds,
-        random_seed=2026,
-        num_search_workers=1,
-    )
-    return SchedulingProblem(tuple(interviewers), tuple(slots)), config
-
-
 def _run_schedule(
     problem: SchedulingProblem,
     config: SchedulerConfig,
@@ -616,7 +288,9 @@ def _run_schedule(
     st.session_state["v2_problem"] = problem
     st.session_state["v2_config"] = config
     st.session_state["v2_validation"] = report
-    st.session_state["v2_result"] = result
+    st.session_state["v2_result"] = replace(
+        result, settings={**result.settings, **st.session_state.get("v2_source_hashes", {})}
+    )
     st.session_state.pop("v2_report", None)
     st.session_state.pop("v2_simplified_report", None)
     st.session_state.pop("v2_download_reviewed", None)
@@ -641,6 +315,7 @@ def _show_upload_step() -> CampaignImportResult | None:
             "Student interviewer availability",
             type=["xlsx"],
             key="student_file",
+            on_change=_sources_changed,
             help=(
                 "The date headings and time worksheets in this file determine the "
                 "interview periods used in the next step."
@@ -650,18 +325,23 @@ def _show_upload_step() -> CampaignImportResult | None:
             "Adcom interviewer availability",
             type=["xlsx"],
             key="adcom_file",
+            on_change=_sources_changed,
         )
         settings_left, settings_middle, settings_right = st.columns(3)
         scenario = settings_left.text_input(
             "Schedule name",
+            key="v2_scenario_input",
+            on_change=_scenario_changed,
             value=st.session_state.get("v2_scenario", "Winter 2026 Round 2"),
             help="This name will be included in the downloaded workbook filename.",
         )
         campaign_year = settings_middle.number_input(
             "Interview year",
+            key="v2_year_input",
+            on_change=_sources_changed,
             min_value=2025,
             max_value=2100,
-            value=2026,
+            value=st.session_state.get("v2_campaign_year", 2026),
             step=1,
         )
         settings_right.text_input(
@@ -670,11 +350,14 @@ def _show_upload_step() -> CampaignImportResult | None:
             disabled=True,
             help="All dates and times are interpreted in Eastern Time.",
         )
+        if st.session_state.get("v2_source_notice"):
+            st.warning(st.session_state["v2_source_notice"])
         if st.button(
             "Find interview periods and continue",
             type="primary",
             disabled=not (student_file and adcom_file),
         ):
+            invalidate_import(st.session_state)
             try:
                 imported = prepare_campaign_from_availability(
                     student_workbook=student_file.getvalue(),
@@ -695,6 +378,10 @@ def _show_upload_step() -> CampaignImportResult | None:
                 st.session_state["v2_scenario"] = scenario.strip() or "Schedule"
                 st.session_state["v2_campaign_year"] = int(campaign_year)
                 st.session_state["v2_timezone"] = "America/New_York"
+                st.session_state["v2_source_hashes"] = {
+                    "source_student_sha256": sha256(student_file.getvalue()).hexdigest(),
+                    "source_adcom_sha256": sha256(adcom_file.getvalue()).hexdigest(),
+                }
                 _initialize_review(imported)
                 st.rerun()
     return st.session_state.get("v2_import")
@@ -723,7 +410,7 @@ def _show_review_step(
         ].copy()
         people_review = st.data_editor(
             basic_people,
-            key="people_review_editor",
+            key=f"people_review_editor_{st.session_state.get('v2_review_revision', 0)}",
             hide_index=True,
             num_rows="dynamic",
             use_container_width=True,
@@ -782,7 +469,7 @@ def _show_review_step(
             previous_people_limits = full_people
             full_people = st.data_editor(
                 full_people,
-                key="people_limits_editor",
+                key=f"people_limits_editor_{st.session_state.get('v2_review_revision', 0)}",
                 hide_index=True,
                 num_rows="dynamic",
                 use_container_width=True,
@@ -871,6 +558,7 @@ def _show_review_step(
                 previous_slots,
                 key=(
                     "slot_review_editor_"
+                    f"{st.session_state.get('v2_review_revision', 0)}_"
                     f"{st.session_state.get('v2_slot_editor_revision', 0)}"
                 ),
                 hide_index=True,
@@ -951,6 +639,7 @@ def _show_review_step(
                 type=["xlsx"],
                 key=(
                     "v2_completed_period_file_"
+                    f"{st.session_state.get('v2_review_revision', 0)}_"
                     f"{st.session_state.get('v2_period_upload_revision', 0)}"
                 ),
             )
@@ -1027,6 +716,7 @@ def _show_review_step(
                 previous_group_slots,
                 key=(
                     "slot_group_editor_"
+                    f"{st.session_state.get('v2_review_revision', 0)}_"
                     f"{st.session_state.get('v2_slot_editor_revision', 0)}"
                 ),
                 hide_index=True,
@@ -1085,6 +775,8 @@ def _show_rules_step(
         defaults = SchedulerConfig().group_policies
         use_recommended = st.checkbox(
             "Use the recommended group assignment rules",
+            key="v2_recommended_rules",
+            on_change=_rules_changed,
             value=True,
             help="These are the default limits supplied for this scheduling process.",
         )
@@ -1115,17 +807,23 @@ def _show_rules_step(
 
         priority_label = st.selectbox(
             "When there are not enough openings",
+            key="v2_priority",
+            on_change=_rules_changed,
             options=list(STUDENT_PRIORITY_OPTIONS),
             index=0,
         )
         consecutive_label = st.selectbox(
             "Consecutive interview periods",
+            key="v2_consecutive_policy",
+            on_change=_rules_changed,
             options=list(CONSECUTIVE_OPTIONS),
             index=0,
         )
         with st.expander("Advanced scheduling settings", expanded=False):
             maximum_consecutive = st.number_input(
                 "Maximum consecutive interview periods",
+                key="v2_max_consecutive",
+                on_change=_rules_changed,
                 min_value=1,
                 value=2,
                 step=1,
@@ -1133,6 +831,8 @@ def _show_rules_step(
             )
             time_limit = st.number_input(
                 "Time allowed to create the schedule (seconds)",
+                key="v2_time_limit",
+                on_change=_rules_changed,
                 min_value=5,
                 value=30,
                 step=5,
@@ -1254,6 +954,16 @@ def _show_failure(result: SolveResult, report: ValidationReport | None) -> None:
             "scheduling settings."
         )
 
+    named_issues = [item for item in result.diagnostics if item.interviewer_name]
+    if named_issues:
+        st.dataframe(pd.DataFrame([
+            {"Interviewer": item.interviewer_name,
+             "Group": item.group.label if item.group else "",
+             "Required or limit": item.expected,
+             "Available or recorded": item.actual,
+             "Issue": item.message}
+            for item in named_issues
+        ]), hide_index=True, use_container_width=True)
     messages = present_diagnostics(result.diagnostics)
     if not messages and report is not None:
         messages = present_validation_issues(report.issues)
@@ -1459,7 +1169,11 @@ def _show_success(
             "I reviewed the exception results and the affected interviewers",
             key="v2_download_reviewed",
         )
-    generated_at = datetime.now(ZoneInfo("America/New_York"))
+    generated_at = (
+        datetime.fromisoformat(result.settings["generated_at_et"])
+        if result.settings.get("generated_at_et")
+        else datetime.now(ZoneInfo("America/New_York"))
+    )
     st.markdown("#### Download schedule files")
     st.caption(
         "The full workbook includes totals and scheduling details. The simplified "

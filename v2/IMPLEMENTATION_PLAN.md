@@ -1,5 +1,50 @@
 # Interview Scheduler v2 implementation plan
 
+## September 2026 review follow-up
+
+The production entry point already runs v2. This follow-up applies only to v2;
+the original delivery and cutover plan below is retained as project history.
+
+Confirmed operating rules: Adcom ranges label sessions, so the documented unique
+same-day start-time match within 30 minutes remains supported. Student and Adcom
+rosters represent different people, including when display names happen to match.
+
+| Phase | Work | Acceptance gate |
+|---|---|---|
+| 1 — Input and workflow correctness | Reject fractional counts; infer omitted AM/PM correctly at noon and midnight; invalidate results when rules, source files, year, or schedule name change; reset editors on a new import | Parser boundary tests and Streamlit regressions prove an old schedule cannot be downloaded or retried after its inputs change |
+| 2 — Solver and diagnostics | Use one elapsed-time deadline across ordered objectives, retain the last feasible solution on timeout, and carry interviewer identity, source paths, and limiting counts into diagnostics | Controlled timeout tests cover first-stage failure, later-stage fallback, and honest feasible/optimal status; named diagnostic tests cover minimum and lock conflicts |
+| 3 — Audit and maintainability | Record stable input/configuration fingerprints, source hashes, application and dependency versions, full per-person policies, run time, and objective-stage outcomes; extract review transformations and state management from the UI | Export tests verify audit fields and overrides; import/edit/solve/download integration tests pass through the production entry point |
+
+Implementation order follows these phases, with regression tests added alongside
+each change. Preserve the nine-sheet full report, simplified schedule, strict-first
+exception workflow, and single-person/shared-capacity scheduling contract. The
+existing test suite and a synthetic end-to-end campaign are release gates.
+The 65-person synthetic campaign is the selected acceptance dataset for this
+release; a real-campaign spot-check can follow during normal operation.
+
+Progress as of 2026-09-30: all three phases are implemented locally on
+`codex/v2-reliability` and verified by **125 passing v2 tests**. The repeatable
+65-person / 150-period benchmark reached an optimal result in 21.813 seconds
+within a 30-second budget, with 350 assignments and no minimum shortfalls.
+Detailed evidence and release limitations are in [ACCEPTANCE_RESULTS.md](ACCEPTANCE_RESULTS.md).
+
+- Phase 1: `counts.py` centralizes lossless numeric validation; source parsing
+  handles noon/midnight and rejects invalid ranges; callbacks invalidate imports,
+  results, downloads, and exception acknowledgments at the appropriate boundary.
+- Phase 2: solver stages share a deadline and record their outcomes; timeout
+  tests exercise the first stage, later stages, exhausted budgets, and unproven
+  objectives. Validation identity and limiting counts reach the UI and export.
+- Phase 3: `audit.py`, `review.py`, and `workflow_state.py` separate provenance,
+  review transformations, and state transitions from rendering. Exports include
+  complete overrides and reject mismatched inputs/configuration. Workflow tests
+  exercise the production entry point through import, edit, solve, both downloads,
+  and failed reimport.
+
+Release sequence: publish the branch for Linux/Python 3.11 CI and code review;
+review the selected synthetic campaign and generated workbooks; satisfy required
+GitHub approvals; then merge and verify the hosted app. Local test results and
+hosted deployment verification are recorded separately.
+
 ## Product decision
 
 V2 is an independent application with no paired-assignment model and no runtime

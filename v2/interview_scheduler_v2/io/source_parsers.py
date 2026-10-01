@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 
+from ..counts import nonnegative_integer
+
 
 WorkbookSource = str | Path | bytes | bytearray | BinaryIO
 
@@ -134,20 +136,31 @@ def _parse_time_range(text: str) -> tuple[time, time] | None:
     end_minute = int(match.group(5) or 0)
     end_meridiem = match.group(6)
 
-    if not end_meridiem and not start_meridiem:
-        return None
-    if not end_meridiem:
-        end_meridiem = start_meridiem
-    if not start_meridiem:
-        start_meridiem = end_meridiem
-        # A range such as 11:30 - 1:00 pm crosses noon.
-        if end_meridiem.lower() == "p" and start_hour > end_hour:
-            start_meridiem = "a"
+    if not (1 <= start_hour <= 12 and 1 <= end_hour <= 12
+            and 0 <= start_minute <= 59 and 0 <= end_minute <= 59):
+        raise ValueError(f"Invalid time range {text!r}: use hours 1–12 and minutes 00–59.")
+    if not start_meridiem and not end_meridiem:
+        raise ValueError(f"Time range {text!r} needs at least one AM or PM marker.")
 
-    return (
-        time(_meridiem_hour(start_hour, start_meridiem), start_minute),
-        time(_meridiem_hour(end_hour, end_meridiem), end_minute),
-    )
+    # Infer a missing marker from the shortest forward interval under 12 hours.
+    # Comparing 24-hour minutes handles both 12 PM (noon) and 12 AM (midnight).
+    candidates = []
+    inferred = not start_meridiem or not end_meridiem
+    for start_marker in (start_meridiem,) if start_meridiem else ("a", "p"):
+        for end_marker in (end_meridiem,) if end_meridiem else ("a", "p"):
+            start = time(_meridiem_hour(start_hour, start_marker), start_minute)
+            end = time(_meridiem_hour(end_hour, end_marker), end_minute)
+            duration = ((end.hour * 60 + end.minute)
+                        - (start.hour * 60 + start.minute)) % (24 * 60)
+            if 0 < duration <= 720 and (not inferred or duration < 720):
+                candidates.append((duration, start, end))
+    if not candidates:
+        raise ValueError(
+            f"Invalid or ambiguous time range {text!r}. Use explicit AM/PM markers "
+            "and a positive session duration of at most 12 hours."
+        )
+    _, start, end = min(candidates)
+    return start, end
 
 
 def _parse_short_time(text: str) -> time:
@@ -317,22 +330,18 @@ def parse_time_slot_workbook(
                     end = _aware_datetime(start.date(), _parse_short_time(str(raw_end)), timezone_name)
 
             try:
-                capacity = int(row[columns["capacity"]])
+                capacity = nonnegative_integer(row[columns["capacity"]])
             except (TypeError, ValueError, IndexError):
-                notices.append(ImportNotice("error", "invalid_capacity", f"Capacity must be an integer for {label!r}.", f"{worksheet.title}!row {row_number}"))
+                notices.append(ImportNotice("error", "invalid_capacity", f"Capacity must be a whole number of zero or more for {label!r}.", f"{worksheet.title}!row {row_number}"))
                 continue
-            if capacity < 0:
-                notices.append(ImportNotice("error", "negative_capacity", f"Capacity cannot be negative for {label!r}.", f"{worksheet.title}!row {row_number}"))
-                continue
-
             target = capacity
             if "target" in columns and columns["target"] < len(row) and row[columns["target"]] not in (None, ""):
                 try:
-                    target = int(row[columns["target"]])
+                    target = nonnegative_integer(row[columns["target"]])
                 except (TypeError, ValueError):
-                    notices.append(ImportNotice("error", "invalid_target", f"Target must be an integer for {label!r}.", f"{worksheet.title}!row {row_number}"))
+                    notices.append(ImportNotice("error", "invalid_target", f"Target must be a whole number of zero or more for {label!r}.", f"{worksheet.title}!row {row_number}"))
                     continue
-            if target < 0 or target > capacity:
+            if target > capacity:
                 notices.append(ImportNotice("error", "target_outside_capacity", f"Target {target} must be between zero and capacity {capacity} for {label!r}.", f"{worksheet.title}!row {row_number}"))
                 continue
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -101,6 +102,42 @@ def _validate_policy(policy: GroupPolicy, path: str, add: Any) -> None:
             "min_per_active_day cannot exceed max_per_day", path)
 
 
+def _issue_identity(problem: SchedulingProblem, path: str, context: dict) -> None:
+    """Attach identity at validation time so every downstream consumer keeps it."""
+    person_id = context.get("interviewer_id")
+    slot_id = context.get("slot_id")
+    indexed = re.match(r"(interviewers|slots|locked_assignments)\[(\d+)\]", path)
+    if indexed:
+        collection = getattr(problem, indexed.group(1))
+        item = collection[int(indexed.group(2))]
+        if indexed.group(1) == "interviewers":
+            person_id = item.id
+        elif indexed.group(1) == "slots":
+            slot_id = item.id
+        else:
+            person_id, slot_id = item.interviewer_id, item.slot_id
+            context.setdefault("assignment_date", item.assignment_date.isoformat())
+    for person in problem.interviewers:
+        if person.id == person_id or any(
+            path == prefix or path.startswith(prefix + ".")
+            for prefix in (f"interviewers.{person.id}", f"config.person_policies.{person.id}")
+        ):
+            context.setdefault("interviewer_id", person.id)
+            context.setdefault("interviewer_name", person.name)
+            context.setdefault("group", person.group.value)
+            if ".days." in path:
+                context.setdefault("assignment_date", path.rsplit(".days.", 1)[1])
+            break
+    if person_id:
+        context.setdefault("interviewer_id", person_id)
+    for slot in problem.slots:
+        if slot.id == slot_id or path == f"slots.{slot.id}":
+            context.setdefault("slot_id", slot.id)
+            break
+    if slot_id:
+        context.setdefault("slot_id", slot_id)
+
+
 def validate_problem(
     problem: SchedulingProblem, config: SchedulerConfig | None = None
 ) -> ValidationReport:
@@ -118,6 +155,10 @@ def validate_problem(
         relaxation_key: str | None = None,
         **context: Any,
     ) -> None:
+        _issue_identity(problem, path, context)
+        if context.get("interviewer_name"):
+            group = InterviewerGroup(context["group"]).label
+            message = f"{context['interviewer_name']} ({group}): {message}"
         issues.append(
             ValidationIssue(
                 code=code,
@@ -321,9 +362,10 @@ def validate_problem(
             continue
         if person.historical_prior_count > policy.max_total:
             add("PRIOR_EXCEEDS_MAX_TOTAL", Severity.ERROR, ConstraintFamily.TOTAL_LIMIT,
-                "Historical prior count already exceeds the hard maximum total",
+                f"historical count {person.historical_prior_count} exceeds the maximum of {policy.max_total}.",
                 f"interviewers[{index}].historical_prior_count", relaxable=True,
-                relaxation_key=policy_key(person, "max_total"))
+                relaxation_key=policy_key(person, "max_total"),
+                expected=policy.max_total, actual=person.historical_prior_count)
         day_counts: Counter[Any] = Counter(
             known_slots[slot_id].local_date
             for slot_id in person.available_slot_ids
@@ -336,10 +378,12 @@ def validate_problem(
         required_new = max(0, policy.min_total - person.historical_prior_count)
         if possible_new < required_new:
             add("MIN_TOTAL_INFEASIBLE", Severity.ERROR, ConstraintFamily.TOTAL_LIMIT,
-                "Availability and hard limits cannot satisfy this interviewer's minimum total",
+                (f"needs {required_new} new assignment(s) to reach the cumulative minimum "
+                 f"of {policy.min_total}; availability and hard limits allow at most {possible_new}."),
                 f"interviewers[{index}]", relaxable=True,
                 relaxation_key=policy_key(person, "min_total"),
-                required_new=required_new, possible_new=possible_new)
+                required_new=required_new, possible_new=possible_new,
+                expected=required_new, actual=possible_new)
 
     lock_keys: Counter[tuple[str, str]] = Counter()
     locks_by_slot: dict[str, list[Any]] = defaultdict(list)
@@ -380,7 +424,8 @@ def validate_problem(
         if len(locks) > slot.capacity:
             add("LOCKS_EXCEED_SLOT_CAPACITY", Severity.ERROR, ConstraintFamily.CAPACITY,
                 "Locked assignments exceed shared slot capacity", f"slots.{slot_id}",
-                locked_count=len(locks), capacity=slot.capacity)
+                locked_count=len(locks), capacity=slot.capacity,
+                expected=slot.capacity, actual=len(locks))
         if slot.target is not None and len(locks) > slot.target:
             add("LOCKS_EXCEED_SLOT_TARGET", Severity.WARNING, ConstraintFamily.TARGET,
                 "Locked assignments already exceed the soft slot target", f"slots.{slot_id}")
@@ -390,9 +435,11 @@ def validate_problem(
         policy = policy_for(person)
         if policy and person.historical_prior_count + lock_count > policy.max_total:
             add("LOCKS_EXCEED_MAX_TOTAL", Severity.ERROR, ConstraintFamily.TOTAL_LIMIT,
-                "Historical and locked assignments exceed the hard maximum total",
+                (f"history plus locked assignments totals {person.historical_prior_count + lock_count}, "
+                 f"above the maximum of {policy.max_total}."),
                 f"interviewers.{person_id}", relaxable=True,
-                relaxation_key=policy_key(person, "max_total"))
+                relaxation_key=policy_key(person, "max_total"),
+                expected=policy.max_total, actual=person.historical_prior_count + lock_count)
 
     adjacency = set(problem.adjacency)
     overlaps = set(problem.overlaps)
@@ -405,9 +452,10 @@ def validate_problem(
         policy = policy_for(person)
         if policy and len(locked_slot_ids) > policy.max_per_day:
             add("LOCKS_EXCEED_MAX_PER_DAY", Severity.ERROR, ConstraintFamily.DAILY_LIMIT,
-                "Locked assignments exceed the hard daily maximum",
+                f"{len(locked_slot_ids)} locked assignments on {day.isoformat()} exceed the daily maximum of {policy.max_per_day}.",
                 f"interviewers.{person_id}.days.{day.isoformat()}", relaxable=True,
-                relaxation_key=policy_key(person, "max_per_day"))
+                relaxation_key=policy_key(person, "max_per_day"),
+                expected=policy.max_per_day, actual=len(locked_slot_ids))
 
         ordered = ordered_slot_ids_by_day[day]
         run = 0
@@ -422,7 +470,7 @@ def validate_problem(
             add("LOCKS_EXCEED_MAX_CONSECUTIVE", Severity.ERROR, ConstraintFamily.CONSECUTIVE,
                 "Locked assignments exceed the hard consecutive-slot limit",
                 f"interviewers.{person_id}.days.{day.isoformat()}",
-                longest_run=longest)
+                longest_run=longest, expected=cfg.max_consecutive_slots, actual=longest)
 
         for left, right in overlaps:
             if left in locked_slot_ids and right in locked_slot_ids:
@@ -457,7 +505,8 @@ def validate_problem(
         add("AGGREGATE_MINIMUM_EXCEEDS_CAPACITY", Severity.ERROR, ConstraintFamily.CAPACITY,
             "Aggregate hard minimum demand exceeds shared capacity", "problem",
             relaxable=True, relaxation_key="minimum_totals_or_capacity",
-            required_new_total=required_new_total, total_capacity=total_capacity)
+            required_new_total=required_new_total, total_capacity=total_capacity,
+            expected=required_new_total, actual=total_capacity)
 
     total_target_demand = sum(
         slot.target if slot.target is not None else slot.capacity
