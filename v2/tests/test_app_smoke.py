@@ -249,13 +249,28 @@ def test_rule_edit_after_infeasible_run_removes_stale_exception_retry():
     _assert_no_cached_result(app)
 
 
-def test_unrelated_rerun_keeps_downloads_and_run_identity():
+def test_unrelated_rerun_keeps_schedule_downloads_and_run_identity():
     app = _app_with_result()
     result = app.session_state["v2_result"]
     full_report = app.session_state["v2_report"]
-    urls = [item.proto.url for item in app.get("download_button")]
+    simplified_report = app.session_state["v2_simplified_report"]
+    labels = {"Download full schedule workbook", "Download simplified schedule"}
+
+    def schedule_urls():
+        # The input worksheet is regenerated, including its XLSX creation time.
+        # Only the two solved reports must retain their bytes and download URLs.
+        return {
+            item.label: item.proto.url
+            for item in app.get("download_button")
+            if item.label in labels
+        }
+
+    urls = schedule_urls()
+    assert set(urls) == labels
+    assert all(urls.values())
     app.run()
     assert not app.exception
     assert app.session_state["v2_result"].settings["run_id"] == result.settings["run_id"]
     assert app.session_state["v2_report"] == full_report
-    assert [item.proto.url for item in app.get("download_button")] == urls
+    assert app.session_state["v2_simplified_report"] == simplified_report
+    assert schedule_urls() == urls

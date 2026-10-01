@@ -9,7 +9,7 @@ must not be used to roll this reliability update back to the legacy scheduler.
 - [ ] Review the `codex/v2-reliability` pull request and satisfy applicable GitHub
       branch rules, including required review approval.
 - [ ] Pass the v2 test suite and production startup check on Linux/Python 3.11.
-- [ ] Run the 65-person, 150-period synthetic campaign selected for this release;
+- [x] Run the 65-person, 150-period synthetic campaign selected for this release;
       verify hard constraints and agreement between full and simplified reports.
 - [ ] Confirm the hosted app's source branch and entry point before merge.
 - [ ] Merge the reviewed change into `main` and verify the deployed app.

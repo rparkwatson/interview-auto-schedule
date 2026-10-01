@@ -49,12 +49,28 @@ The 100 unfilled seats are expected: the requested capacity is 450, while the
 combined interviewer maximums allow 350 assignments. Timings are local observations,
 not a guarantee for other hardware or source campaigns.
 
-### Remaining release checks
+### October 1 pre-merge acceptance
 
-Linux/Python 3.11 CI will run when the branch is published. Campaign acceptance
-for this release uses the selected 65-person synthetic campaign and both generated
-workbooks. Required GitHub approval and hosted deployment verification are tracked
-on the release pull request; local checks alone do not establish deployment.
+The selected 65-person campaign was also represented as Student and Adcom source
+workbooks. Import preserved all 65 people, 150 periods, and 7,800 availability
+entries, matching the benchmark's dates, times, names, and groups. The only import
+notice was the expected missing separate Adcom roster warning; every synthetic
+Adcom person had availability and was present in the imported campaign.
+
+The benchmark then solved optimally at all four stages in **12.909 seconds** within
+its 30-second budget, with 350 assignments, no minimum shortfalls, no back-to-back
+pairs, and the expected 100-seat deficit. Independent checks verified availability,
+unique assignments, capacity, person minimums/maximums, daily limits, and no overlap.
+The full report contained all nine required sheets, and every one of the 150
+simplified schedule rows agreed with the full report's 350 assignments.
+
+The schedule-download rerun test explicitly checks both cached reports and their
+URLs, excluding the independently regenerated input worksheet's creation timestamp.
+All 12 Streamlit smoke tests passed locally after this test correction.
+
+Linux/Python 3.11 CI, required GitHub approval, and hosted deployment verification
+are tracked on [PR #15](https://github.com/rparkwatson/interview-auto-schedule/pull/15).
+Local checks alone do not establish deployment.
 
 ## Historical baseline record
 
