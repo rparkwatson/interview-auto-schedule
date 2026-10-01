@@ -11,6 +11,10 @@ from typing import Mapping
 from .domain import InterviewerGroup
 
 
+# One campaign-wide default; campaigns may select another IANA timezone.
+DEFAULT_TIMEZONE_NAME = "America/New_York"
+
+
 class BackToBackPolicy(str, Enum):
     DISCOURAGED = "discouraged"
     HARD = "hard"
@@ -71,6 +75,13 @@ class SchedulerConfig:
     time_limit_seconds: float = 30.0
     random_seed: int = 2026
     num_search_workers: int = 1
+    # Relative objective weights, recorded with every run for auditability.
+    maximum_overage_weight: int = 10
+    daily_overage_weight: int = 5
+    slot_target_deviation_weight: int = 10
+    group_target_deficit_weight: int = 5
+    back_to_back_penalty: int = 100
+    over_target_penalty: int = 10
     def __post_init__(self) -> None:
         policies = {
             InterviewerGroup(group): policy
@@ -98,6 +109,16 @@ class SchedulerConfig:
             raise ValueError("time_limit_seconds must be finite and positive")
         if self.num_search_workers < 1:
             raise ValueError("num_search_workers must be at least 1")
+        for name in (
+            "maximum_overage_weight",
+            "daily_overage_weight",
+            "slot_target_deviation_weight",
+            "group_target_deficit_weight",
+            "back_to_back_penalty",
+            "over_target_penalty",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be zero or more")
 
     def policy_for(self, interviewer_id: str, group: InterviewerGroup) -> GroupPolicy:
         """Resolve a per-person override before the canonical group default."""

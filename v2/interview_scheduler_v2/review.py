@@ -343,7 +343,5 @@ def _reviewed_problem_and_config(
         max_consecutive_slots=maximum_consecutive,
         student_priority_weight=student_priority_weight,
         time_limit_seconds=time_limit_seconds,
-        random_seed=2026,
-        num_search_workers=1,
     )
     return SchedulingProblem(tuple(interviewers), tuple(slots)), config

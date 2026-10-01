@@ -261,3 +261,133 @@ def test_campaign_can_be_prepared_without_a_separate_slot_workbook():
         if person.group is InterviewerGroup.ADCOM
     )
     assert adcom.available_slot_ids == frozenset({"20260224-0800"})
+
+
+def test_malformed_slot_labels_produce_notices_instead_of_crashing():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Date_Time", "Max_Slot"])
+    sheet.append(["2/30 - 800 AM", 2])
+    sheet.append(["2/24 - 875 AM", 2])
+    sheet.append(["2/24 - 800 AM", 2])
+    parsed = parse_time_slot_workbook(workbook_bytes(workbook), year=2026)
+    assert [slot.id for slot in parsed.slots] == ["20260224-0800"]
+    assert sum(1 for item in parsed.notices if item.code == "invalid_slot_label") == 2
+
+
+def test_malformed_end_time_produces_notice_and_skips_row():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Date", "Start", "End", "Capacity"])
+    sheet.append(["2026-02-24", "8:00 AM", "banana", 4])
+    sheet.append(["2026-02-24", "10:30 AM", "12:00 PM", 4])
+    parsed = parse_time_slot_workbook(workbook_bytes(workbook), year=2026)
+    assert [slot.id for slot in parsed.slots] == ["20260224-1030"]
+    assert any(item.code == "invalid_slot_label" for item in parsed.notices)
+
+
+def test_overnight_end_time_rolls_to_the_next_day():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Date", "Start", "End", "Capacity"])
+    sheet.append(["2026-02-24", "11:30 PM", "1:00 AM", 2])
+    parsed = parse_time_slot_workbook(workbook_bytes(workbook), year=2026)
+    slot = parsed.slots[0]
+    assert slot.end.date() > slot.start.date()
+    assert (slot.end - slot.start).total_seconds() == 90 * 60
+
+
+def test_zero_length_slot_is_rejected_with_a_notice():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Date", "Start", "End", "Capacity"])
+    sheet.append(["2026-02-24", "8:00 AM", "8:00 AM", 2])
+    parsed = parse_time_slot_workbook(workbook_bytes(workbook), year=2026)
+    assert not parsed.slots
+    assert any(item.code == "invalid_slot_label" for item in parsed.notices)
+
+
+def test_invalid_student_date_header_is_reported_and_skipped():
+    workbook = Workbook()
+    roster = workbook.active
+    roster.title = "AF Names"
+    roster.append(["AF Names"])
+    roster.append(["Student One"])
+    sheet = workbook.create_sheet("800 AM")
+    sheet.cell(3, 1, "8:00 am - 9:30 am")
+    sheet.cell(4, 2, "Tuesday (2/24)")
+    sheet.cell(4, 3, "Wednesday (2/30)")
+    sheet.cell(5, 2, "Student One")
+    parsed = parse_student_schedule(workbook_bytes(workbook), year=2026)
+    assert [slot.id for slot in parsed.slot_set.slots] == ["20260224-0800"]
+    assert any(
+        item.code == "invalid_date_header"
+        for item in parsed.availability.notices
+    )
+
+
+def test_malformed_adcom_heading_is_reported_instead_of_fatal():
+    workbook = Workbook()
+    availability = workbook.active
+    availability.title = "AdCom Availability"
+    availability.cell(2, 1, "Tuesday (2/24) 8:00 am - 9:30 am")
+    availability.cell(2, 2, "Tuesday (2/24) 10:00 - 11:30")
+    availability.cell(3, 1, "Adcom One")
+    availability.cell(3, 2, "Adcom Two")
+    parsed = parse_adcom_availability(workbook_bytes(workbook), year=2026)
+    assert parsed.names == ["Adcom One"]
+    assert any(item.code == "invalid_time_header" for item in parsed.notices)
+
+
+def test_differently_written_same_names_are_merged_with_a_notice():
+    workbook = Workbook()
+    roster = workbook.active
+    roster.title = "AF Names"
+    roster.append(["AF Names"])
+    roster.append(["Student One"])
+    sheet = workbook.create_sheet("800 AM")
+    sheet.cell(3, 1, "8:00 am - 9:30 am")
+    sheet.cell(4, 2, "Tuesday (2/24)")
+    sheet.cell(5, 2, "STUDENT ONE")
+    imported = prepare_campaign_from_availability(
+        student_workbook=workbook_bytes(workbook),
+        adcom_workbook=adcom_source(),
+        year=2026,
+    )
+    students = [
+        person
+        for person in imported.problem.interviewers
+        if person.group is InterviewerGroup.STUDENT
+    ]
+    assert len(students) == 1
+    assert any(item.code == "same_name_merged" for item in imported.notices)
+
+
+def test_weekday_mismatch_warns_that_the_year_may_be_wrong():
+    workbook = Workbook()
+    roster = workbook.active
+    roster.title = "AF Names"
+    roster.append(["AF Names"])
+    roster.append(["Student One"])
+    sheet = workbook.create_sheet("800 AM")
+    sheet.cell(3, 1, "8:00 am - 9:30 am")
+    sheet.cell(4, 2, "Tuesday (2/24)")
+    sheet.cell(5, 2, "Student One")
+    source = workbook_bytes(workbook)
+
+    mismatched = parse_student_schedule(source, year=2027)
+    assert any(
+        item.code == "date_weekday_mismatch"
+        for item in mismatched.availability.notices
+    )
+
+    matched = parse_student_schedule(source, year=2026)
+    assert not any(
+        item.code == "date_weekday_mismatch"
+        for item in matched.availability.notices
+    )
+
+
+def test_adcom_weekday_mismatch_warns_that_the_year_may_be_wrong():
+    parsed = parse_adcom_availability(adcom_source(), year=2027)
+    assert any(item.code == "date_weekday_mismatch" for item in parsed.notices)

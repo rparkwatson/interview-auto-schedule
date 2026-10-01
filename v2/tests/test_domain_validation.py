@@ -175,5 +175,29 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(issue.relaxation_key, "group_policies.student.max_total")
 
 
+class LosslessDomainNumbersTest(unittest.TestCase):
+    def test_fractional_values_are_rejected_not_truncated(self):
+        start = datetime(2026, 3, 1, 8, tzinfo=timezone.utc)
+        end = start + timedelta(minutes=90)
+        for value in (2.5, "2.5", float("nan")):
+            with self.assertRaises(ValueError):
+                Slot("s1", start, end, value)
+            with self.assertRaises(ValueError):
+                Slot("s1", start, end, 2, value)
+            with self.assertRaises(ValueError):
+                Interviewer.create(
+                    name="Fraction",
+                    group=InterviewerGroup.STUDENT,
+                    historical_prior_count=value,
+                )
+            with self.assertRaises(ValueError):
+                Interviewer.create(
+                    name="Fraction",
+                    group=InterviewerGroup.STUDENT,
+                    available_slot_ids=["s1"],
+                    preference_by_slot={"s1": value},
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

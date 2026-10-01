@@ -29,15 +29,16 @@ from .results import (
 )
 
 
+# Only errors that an advisory relaxation mode can actually absorb belong
+# here. Slot capacity, availability, and consecutive-run limits are never
+# relaxed, so lock conflicts with them are fatal validation failures rather
+# than relaxable infeasibilities.
 _MODELABLE_FEASIBILITY_ERRORS = {
     "MIN_TOTAL_INFEASIBLE",
     "AGGREGATE_MINIMUM_EXCEEDS_CAPACITY",
     "PRIOR_EXCEEDS_MAX_TOTAL",
     "LOCKS_EXCEED_MAX_TOTAL",
     "LOCKS_EXCEED_MAX_PER_DAY",
-    "LOCKS_EXCEED_SLOT_CAPACITY",
-    "LOCKS_EXCEED_MAX_CONSECUTIVE",
-    "LOCK_OUTSIDE_AVAILABILITY",
 }
 
 
@@ -149,8 +150,12 @@ def solve(
             <= slot.capacity
         )
 
+    # Computed once: these properties scan the slot list on every access.
+    overlapping_pairs = problem.overlaps
+    adjacent_pairs = problem.adjacency
+
     for person in people:
-        for left, right in problem.overlaps:
+        for left, right in overlapping_pairs:
             model.Add(x[(person.id, left)] + x[(person.id, right)] <= 1)
 
     days: dict[date, list[str]] = defaultdict(list)
@@ -206,7 +211,7 @@ def solve(
             )
             model.Add(cumulative <= policy.max_total + overage)
             maximum_overage[person.id] = overage
-            violation_terms.append(10 * overage)
+            violation_terms.append(cfg.maximum_overage_weight * overage)
         else:
             model.Add(cumulative <= policy.max_total)
 
@@ -240,7 +245,7 @@ def solve(
                 )
                 model.Add(daily_total <= policy.max_per_day + daily_over)
                 daily_overage[(person.id, assignment_day)] = daily_over
-                violation_terms.append(5 * daily_over)
+                violation_terms.append(cfg.daily_overage_weight * daily_over)
             else:
                 model.Add(daily_total <= policy.max_per_day)
 
@@ -299,7 +304,7 @@ def solve(
     spacing_terms: list[cp_model.LinearExpr] = []
     if cfg.back_to_back is not BackToBackPolicy.OFF:
         for person in people:
-            for left, right in problem.adjacency:
+            for left, right in adjacent_pairs:
                 if cfg.back_to_back is BackToBackPolicy.HARD:
                     model.Add(x[(person.id, left)] + x[(person.id, right)] <= 1)
                 else:
@@ -325,7 +330,12 @@ def solve(
         model.Add(excess >= assigned - target)
         slot_target_deficit[slot.id] = deficit
         slot_target_excess[slot.id] = excess
-        coverage_terms.extend((10 * deficit, 10 * excess))
+        coverage_terms.extend(
+            (
+                cfg.slot_target_deviation_weight * deficit,
+                cfg.slot_target_deviation_weight * excess,
+            )
+        )
 
         for group, group_target in slot.group_targets.items():
             group_assigned = _linear_sum(
@@ -340,7 +350,7 @@ def solve(
             )
             model.Add(group_assigned + group_deficit >= group_target)
             group_target_deficit[(slot.id, group)] = group_deficit
-            coverage_terms.append(5 * group_deficit)
+            coverage_terms.append(cfg.group_target_deficit_weight * group_deficit)
 
     preference_terms: list[cp_model.LinearExpr] = []
     for person in people:
@@ -375,8 +385,8 @@ def solve(
     if person_target_terms:
         stages.append(("individual_target_shortfall", _linear_sum(person_target_terms)))
     quality_terms = (
-        [100 * item for item in spacing_terms]
-        + [10 * item for item in person_excess_terms]
+        [cfg.back_to_back_penalty * item for item in spacing_terms]
+        + [cfg.over_target_penalty * item for item in person_excess_terms]
         + preference_terms
     )
     if quality_terms:
@@ -461,7 +471,9 @@ def solve(
             for index in range(len(model.Proto().variables))
         }
         if expression is not None:
-            model.Add(expression == optimum)
+            # A stage that stopped at FEASIBLE has only proven an upper bound,
+            # so later stages must stay free to improve this objective.
+            model.Add(expression <= optimum)
         model.ClearHints()
         for index, value in best_values.items():
             model.AddHint(model.GetIntVarFromProtoIndex(index), value)
@@ -499,6 +511,12 @@ def _settings(
         "random_seed": cfg.random_seed,
         "search_workers": cfg.num_search_workers,
         "capacity_units_per_assignment": cfg.capacity_units_per_assignment,
+        "maximum_overage_weight": cfg.maximum_overage_weight,
+        "daily_overage_weight": cfg.daily_overage_weight,
+        "slot_target_deviation_weight": cfg.slot_target_deviation_weight,
+        "group_target_deficit_weight": cfg.group_target_deficit_weight,
+        "back_to_back_penalty": cfg.back_to_back_penalty,
+        "over_target_penalty": cfg.over_target_penalty,
     }
 
 

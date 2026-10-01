@@ -197,3 +197,38 @@ def test_simplified_filename_is_scenario_specific_and_sanitized():
         generated_at=datetime(2026, 8, 28, 14, 30),
     )
     assert value == "Winter_2026_Round_2_simplified_schedule_20260828_143000.xlsx"
+
+
+def test_names_that_look_like_formulas_stay_text_in_both_reports():
+    start = datetime(2026, 3, 1, 8, tzinfo=ZoneInfo("America/New_York"))
+    slot = Slot("s1", start, start + timedelta(minutes=90), 1, 1)
+    person = Interviewer.create(
+        name='=HYPERLINK("http://example.test","click")',
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1"],
+    )
+    problem = SchedulingProblem((person,), (slot,))
+    config = SchedulerConfig(
+        group_policies={
+            InterviewerGroup.STUDENT: GroupPolicy(1, 1, 1, 1),
+            InterviewerGroup.ADCOM: GroupPolicy(0, 0, 1, 1),
+        },
+        time_limit_seconds=5,
+    )
+    result = solve(problem, scenario="Injection", config=config)
+    assert result.succeeded
+
+    workbook = load_workbook(
+        BytesIO(build_workbook(result, problem, config)),
+        data_only=False,
+    )
+    name_cell = workbook["Assignments"]["F2"]
+    assert name_cell.data_type == "s"
+    assert name_cell.value.startswith("=HYPERLINK")
+
+    simplified = load_workbook(
+        BytesIO(build_simplified_schedule_workbook(result)),
+        data_only=False,
+    )[SIMPLIFIED_SCHEDULE_SHEET]
+    assert simplified["C2"].data_type == "s"
+    assert simplified["C2"].value.startswith("=HYPERLINK")

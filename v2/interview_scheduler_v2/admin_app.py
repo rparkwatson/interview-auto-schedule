@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from .config import BackToBackPolicy, GroupPolicy, RelaxationMode, SchedulerConfig
+from .config import (
+    DEFAULT_TIMEZONE_NAME,
+    BackToBackPolicy,
+    GroupPolicy,
+    RelaxationMode,
+    SchedulerConfig,
+)
 from .domain import (
     InterviewerGroup,
     SchedulingProblem,
@@ -94,7 +100,36 @@ def _rules_changed() -> None:
     _invalidate_result_after_edit(changed=True, reason="The scheduling rules changed.")
 
 
+def _sources_match_current_import() -> bool:
+    """True when the uploaded files and year match the campaign already imported.
+
+    Re-selecting the same workbook (or re-entering the same year) must not
+    destroy the operator's review edits.
+    """
+
+    hashes = st.session_state.get("v2_source_hashes")
+    if not hashes or st.session_state.get("v2_import") is None:
+        return False
+    year = st.session_state.get("v2_year_input")
+    if year is not None and int(year) != int(
+        st.session_state.get("v2_campaign_year", year)
+    ):
+        return False
+    student_file = st.session_state.get("student_file")
+    adcom_file = st.session_state.get("adcom_file")
+    if student_file is None or adcom_file is None:
+        return False
+    return (
+        sha256(student_file.getvalue()).hexdigest()
+        == hashes.get("source_student_sha256")
+        and sha256(adcom_file.getvalue()).hexdigest()
+        == hashes.get("source_adcom_sha256")
+    )
+
+
 def _sources_changed() -> None:
+    if _sources_match_current_import():
+        return
     invalidate_import(st.session_state)
 
 
@@ -146,9 +181,14 @@ def _current_schedule_journey():
     )
 
 
-def _show_brand_and_progress() -> None:
-    st.markdown(BRAND_CSS, unsafe_allow_html=True)
-    st.markdown(
+def _render_progress(placeholder) -> None:
+    """Fill the reserved tracker slot after the sections have updated state.
+
+    Rendering last keeps the tracker in step with edits made during this
+    rerun; the placeholder keeps its visual position near the top.
+    """
+
+    placeholder.markdown(
         schedule_journey_html(_current_schedule_journey()),
         unsafe_allow_html=True,
     )
@@ -279,12 +319,21 @@ def _run_schedule(
     relaxation_mode: RelaxationMode,
 ) -> None:
     report = validate_problem(problem, config)
-    result = solve(
-        problem,
-        scenario=st.session_state.get("v2_scenario", "Schedule"),
-        config=config,
-        relaxation_mode=relaxation_mode,
-    )
+    budget = int(config.time_limit_seconds)
+    with st.status(
+        f"Creating the schedule… this can take up to {budget} seconds.",
+        expanded=False,
+    ) as status:
+        result = solve(
+            problem,
+            scenario=st.session_state.get("v2_scenario", "Schedule"),
+            config=config,
+            relaxation_mode=relaxation_mode,
+        )
+        status.update(
+            label=f"Scheduling finished in {result.wall_time_seconds:.0f} seconds.",
+            state="complete" if result.succeeded else "error",
+        )
     st.session_state["v2_problem"] = problem
     st.session_state["v2_config"] = config
     st.session_state["v2_validation"] = report
@@ -363,7 +412,7 @@ def _show_upload_step() -> CampaignImportResult | None:
                     student_workbook=student_file.getvalue(),
                     adcom_workbook=adcom_file.getvalue(),
                     year=int(campaign_year),
-                    timezone_name="America/New_York",
+                    timezone_name=DEFAULT_TIMEZONE_NAME,
                 )
             except Exception as exc:  # Streamlit needs a friendly import boundary.
                 st.error(
@@ -377,7 +426,7 @@ def _show_upload_step() -> CampaignImportResult | None:
                 st.session_state["v2_import"] = imported
                 st.session_state["v2_scenario"] = scenario.strip() or "Schedule"
                 st.session_state["v2_campaign_year"] = int(campaign_year)
-                st.session_state["v2_timezone"] = "America/New_York"
+                st.session_state["v2_timezone"] = DEFAULT_TIMEZONE_NAME
                 st.session_state["v2_source_hashes"] = {
                     "source_student_sha256": sha256(student_file.getvalue()).hexdigest(),
                     "source_adcom_sha256": sha256(adcom_file.getvalue()).hexdigest(),
@@ -619,7 +668,7 @@ def _show_review_step(
                 student_available=student_counts,
                 adcom_available=adcom_counts,
                 timezone_name=st.session_state.get(
-                    "v2_timezone", "America/New_York"
+                    "v2_timezone", DEFAULT_TIMEZONE_NAME
                 ),
             )
             st.download_button(
@@ -654,7 +703,7 @@ def _show_review_step(
                         expected_slots=imported.problem.slots,
                         year=int(st.session_state.get("v2_campaign_year", 2026)),
                         timezone_name=st.session_state.get(
-                            "v2_timezone", "America/New_York"
+                            "v2_timezone", DEFAULT_TIMEZONE_NAME
                         ),
                     )
                 except PeriodTemplateError as exc:
@@ -1172,7 +1221,7 @@ def _show_success(
     generated_at = (
         datetime.fromisoformat(result.settings["generated_at_et"])
         if result.settings.get("generated_at_et")
-        else datetime.now(ZoneInfo("America/New_York"))
+        else datetime.now(ZoneInfo(DEFAULT_TIMEZONE_NAME))
     )
     st.markdown("#### Download schedule files")
     st.caption(
@@ -1221,7 +1270,8 @@ def main() -> None:
         page_icon="📅",
         layout="wide",
     )
-    _show_brand_and_progress()
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    progress_slot = st.empty()
     st.title("Interview Scheduler")
     st.caption(
         "Create one-person interview assignments for Student and Adcom interviewers "
@@ -1231,6 +1281,7 @@ def main() -> None:
     imported = _show_upload_step()
     if imported is None:
         st.info("Upload both availability files in Step 1 to begin.")
+        _render_progress(progress_slot)
         return
 
     _show_file_checks(imported)
@@ -1267,6 +1318,7 @@ def main() -> None:
         period_setup_issues=period_issues,
     )
     _show_results(imported)
+    _render_progress(progress_slot)
 
 
 __all__ = ["main"]

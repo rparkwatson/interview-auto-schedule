@@ -147,3 +147,21 @@ def test_period_template_rejects_pasted_fractional_counts(capacity):
         parse_completed_interview_period_template(
             output.getvalue(), expected_slots=slots, year=2026
         )
+
+
+def test_overnight_period_survives_the_template_round_trip():
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 2, 24, 23, 30, tzinfo=zone)
+    slots = (Slot("20260224-2330", start, start + timedelta(minutes=90), 0, 0),)
+    content = build_interview_period_template(slots, scenario="Overnight")
+    workbook = load_workbook(BytesIO(content))
+    workbook["Interview Periods"]["F5"] = 2
+    output = BytesIO()
+    workbook.save(output)
+    parsed = parse_completed_interview_period_template(
+        output.getvalue(),
+        expected_slots=slots,
+        year=2026,
+    )
+    assert parsed.slots[0].end.date() > parsed.slots[0].start.date()
+    assert parsed.slots[0].capacity == 2

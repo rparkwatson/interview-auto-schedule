@@ -146,7 +146,14 @@ def build_simplified_schedule_workbook(result: SolveResult) -> bytes:
     output = BytesIO()
     workbook = xlsxwriter.Workbook(
         output,
-        {"in_memory": True, "remove_timezone": True},
+        {
+            "in_memory": True,
+            "remove_timezone": True,
+            # Uploaded names and messages are data; never let text that
+            # starts with "=" or looks like a URL become live content.
+            "strings_to_formulas": False,
+            "strings_to_urls": False,
+        },
     )
     workbook.set_properties(
         {
@@ -267,7 +274,14 @@ def build_workbook(
     output = BytesIO()
     workbook = xlsxwriter.Workbook(
         output,
-        {"in_memory": True, "remove_timezone": True},
+        {
+            "in_memory": True,
+            "remove_timezone": True,
+            # Uploaded names and messages are data; never let text that
+            # starts with "=" or looks like a URL become live content.
+            "strings_to_formulas": False,
+            "strings_to_urls": False,
+        },
     )
     workbook.set_properties(
         {

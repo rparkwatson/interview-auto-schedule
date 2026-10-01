@@ -186,6 +186,20 @@ def present_import_notices(
                     "A worksheet was skipped because no recognizable interview time "
                     "range was found."
                 )
+            elif code in {"invalid_date_header", "invalid_time_header"}:
+                summary = (
+                    "A column heading contains a date or time that could not be "
+                    "used, so the availability under it was skipped."
+                )
+            elif code == "same_name_merged":
+                summary = (
+                    "Entries with matching names were treated as the same person."
+                )
+            elif code == "date_weekday_mismatch":
+                summary = (
+                    "A heading's day of week does not match its date in the "
+                    "selected interview year. Check that the year is correct."
+                )
             else:
                 summary = "One or more uploaded rows needs to be reviewed."
             messages.append(

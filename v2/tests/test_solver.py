@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from interview_scheduler_v2 import (
+    BackToBackPolicy,
     GroupPolicy,
     Interviewer,
     InterviewerGroup,
@@ -234,3 +235,131 @@ def test_seeded_single_worker_runs_are_reproducible():
     ] == [
         (item.interviewer_id, item.slot_id) for item in second.assignments
     ]
+
+
+def test_lock_outside_availability_is_invalid_in_every_relaxation_mode():
+    slot = make_slot("s1", 8)
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=[],
+    )
+    lock = LockedAssignment(person.id, "s1", slot.local_date)
+    problem = SchedulingProblem((person,), (slot,), (lock,))
+    for mode in RelaxationMode:
+        result = solve(
+            problem,
+            scenario="impossible lock",
+            config=config(),
+            relaxation_mode=mode,
+        )
+        assert result.status is SolveStatus.INVALID
+        assert any(
+            item.code == "LOCK_OUTSIDE_AVAILABILITY"
+            for item in result.diagnostics
+        )
+
+
+def _two_adjacent_slots() -> tuple[Slot, Slot]:
+    return (make_slot("s1", 8), make_slot("s2", 10))
+
+
+def test_hard_back_to_back_policy_forbids_adjacent_assignments():
+    slots = _two_adjacent_slots()
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1", "s2"],
+    )
+    hard = SchedulerConfig(
+        group_policies={
+            InterviewerGroup.STUDENT: GroupPolicy(0, 2, 2, 2),
+            InterviewerGroup.ADCOM: GroupPolicy(0, 1, 3, 2),
+        },
+        back_to_back=BackToBackPolicy.HARD,
+        time_limit_seconds=5,
+    )
+    result = solve(SchedulingProblem((person,), slots), scenario="hard", config=hard)
+    assert result.succeeded
+    assert len(result.assignments) == 1
+
+
+def test_off_back_to_back_policy_allows_adjacent_assignments():
+    slots = _two_adjacent_slots()
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1", "s2"],
+    )
+    off = SchedulerConfig(
+        group_policies={
+            InterviewerGroup.STUDENT: GroupPolicy(0, 2, 2, 2),
+            InterviewerGroup.ADCOM: GroupPolicy(0, 1, 3, 2),
+        },
+        back_to_back=BackToBackPolicy.OFF,
+        time_limit_seconds=5,
+    )
+    result = solve(SchedulingProblem((person,), slots), scenario="off", config=off)
+    assert result.succeeded
+    assert len(result.assignments) == 2
+
+
+def test_person_policy_override_caps_one_person_below_the_group_default():
+    slots = _two_adjacent_slots()
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1", "s2"],
+    )
+    overridden = SchedulerConfig(
+        group_policies={
+            InterviewerGroup.STUDENT: GroupPolicy(0, 2, 2, 2),
+            InterviewerGroup.ADCOM: GroupPolicy(0, 1, 3, 2),
+        },
+        person_policies={person.id: GroupPolicy(0, 1, 1, 1)},
+        back_to_back=BackToBackPolicy.OFF,
+        time_limit_seconds=5,
+    )
+    result = solve(
+        SchedulingProblem((person,), slots),
+        scenario="override",
+        config=overridden,
+    )
+    assert result.succeeded
+    assert len(result.assignments) == 1
+
+
+def test_min_per_active_day_forces_all_or_nothing_on_a_day():
+    slots = _two_adjacent_slots()
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1", "s2"],
+    )
+    result = solve(
+        SchedulingProblem((person,), slots),
+        scenario="active day",
+        config=config(student=GroupPolicy(0, 1, 2, 2, min_per_active_day=2)),
+    )
+    assert result.succeeded
+    assert len(result.assignments) in (0, 2)
+
+
+def test_objective_weights_are_recorded_in_run_settings():
+    slot = make_slot("s1", 8)
+    person = Interviewer.create(
+        name="Student",
+        group=InterviewerGroup.STUDENT,
+        available_slot_ids=["s1"],
+    )
+    result = solve(
+        SchedulingProblem((person,), (slot,)),
+        scenario="weights",
+        config=config(),
+    )
+    assert result.settings["back_to_back_penalty"] == 100
+    assert result.settings["over_target_penalty"] == 10
+    assert result.settings["slot_target_deviation_weight"] == 10
+    assert result.settings["group_target_deficit_weight"] == 5
+    assert result.settings["maximum_overage_weight"] == 10
+    assert result.settings["daily_overage_weight"] == 5

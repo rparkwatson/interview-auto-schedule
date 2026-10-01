@@ -8,6 +8,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from .counts import whole_number
 from .identifiers import interviewer_id
 
 
@@ -42,7 +43,7 @@ class Interviewer:
         object.__setattr__(
             self,
             "historical_prior_count",
-            int(self.historical_prior_count),
+            whole_number(self.historical_prior_count),
         )
         object.__setattr__(
             self,
@@ -54,7 +55,7 @@ class Interviewer:
             "preference_by_slot",
             MappingProxyType(
                 {
-                    str(slot_id).strip(): int(score)
+                    str(slot_id).strip(): whole_number(score)
                     for slot_id, score in dict(self.preference_by_slot).items()
                 }
             ),
@@ -97,14 +98,14 @@ class Slot:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", str(self.id).strip())
-        object.__setattr__(self, "capacity", int(self.capacity))
+        object.__setattr__(self, "capacity", whole_number(self.capacity))
         object.__setattr__(
             self,
             "target",
-            int(self.target) if self.target is not None else None,
+            whole_number(self.target) if self.target is not None else None,
         )
         targets = {
-            InterviewerGroup(group): int(value)
+            InterviewerGroup(group): whole_number(value)
             for group, value in dict(self.group_targets).items()
         }
         object.__setattr__(self, "group_targets", MappingProxyType(targets))

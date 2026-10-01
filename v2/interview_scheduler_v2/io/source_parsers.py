@@ -69,6 +69,20 @@ class ParsedStudentSchedule:
 
 
 _DATE_IN_PARENS = re.compile(r"\((\d{1,2})/(\d{1,2})\)")
+_WEEKDAY_TOKEN = re.compile(
+    r"\b(monday|mon|tuesday|tues|tue|wednesday|weds|wed|thursday|thurs|thur|thu|"
+    r"friday|fri|saturday|sat|sunday|sun)\b",
+    re.IGNORECASE,
+)
+_WEEKDAY_INDEX = {
+    "mon": 0,
+    "tue": 1,
+    "wed": 2,
+    "thu": 3,
+    "fri": 4,
+    "sat": 5,
+    "sun": 6,
+}
 _TIME_TOKEN = re.compile(r"(\d{1,2})(?::?(\d{2}))?\s*([ap])?\.?m?\.?", re.IGNORECASE)
 _TIME_RANGE = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*[-–]\s*"
@@ -161,6 +175,40 @@ def _parse_time_range(text: str) -> tuple[time, time] | None:
         )
     _, start, end = min(candidates)
     return start, end
+
+
+def _weekday_mismatch(text: str, header_date: date) -> str | None:
+    """Explain a heading whose named weekday contradicts its month/day date.
+
+    A mismatch is the cheapest reliable sign that the selected interview year
+    is wrong, which would otherwise shift every date silently.
+    """
+
+    match = _WEEKDAY_TOKEN.search(text)
+    if not match:
+        return None
+    expected = _WEEKDAY_INDEX[match.group(1).lower()[:3]]
+    if header_date.weekday() == expected:
+        return None
+    return (
+        f"The heading {text.strip()!r} names {match.group(0)}, but "
+        f"{header_date.month}/{header_date.day} falls on a "
+        f"{header_date.strftime('%A')} in {header_date.year}. Check that the "
+        "interview year is correct."
+    )
+
+
+def _try_parse_time_range(text: str) -> tuple[time, time] | None:
+    """Return a parsed range, or ``None`` for text that is not a usable range.
+
+    Search loops scan arbitrary cells for a time range, so a malformed
+    candidate must not abort the whole import.
+    """
+
+    try:
+        return _parse_time_range(text)
+    except ValueError:
+        return None
 
 
 def _parse_short_time(text: str) -> time:
@@ -282,13 +330,17 @@ def parse_time_slot_workbook(
                     if not match:
                         notices.append(ImportNotice("error", "invalid_slot_label", f"Could not parse slot label {label!r}.", f"{worksheet.title}!row {row_number}"))
                         continue
-                    month, day = int(match.group(1)), int(match.group(2))
-                    start_time = _parse_short_time(match.group(3))
-                    start = _aware_datetime(
-                        date(year, month, day),
-                        start_time,
-                        timezone_name,
-                    )
+                    try:
+                        month, day = int(match.group(1)), int(match.group(2))
+                        start_time = _parse_short_time(match.group(3))
+                        start = _aware_datetime(
+                            date(year, month, day),
+                            start_time,
+                            timezone_name,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        notices.append(ImportNotice("error", "invalid_slot_label", f"Could not parse slot label {label!r}: {exc}", f"{worksheet.title}!row {row_number}"))
+                        continue
             else:
                 raw_date = row[columns["date"]] if columns["date"] < len(row) else None
                 raw_start = row[columns["start"]] if columns["start"] < len(row) else None
@@ -322,12 +374,32 @@ def parse_time_slot_workbook(
             end = start + timedelta(minutes=default_duration_minutes)
             if "end" in columns and columns["end"] < len(row) and row[columns["end"]] not in (None, ""):
                 raw_end = row[columns["end"]]
-                if isinstance(raw_end, datetime):
-                    end = _aware_datetime(start.date(), raw_end.time(), timezone_name)
-                elif isinstance(raw_end, time):
-                    end = _aware_datetime(start.date(), raw_end, timezone_name)
-                else:
-                    end = _aware_datetime(start.date(), _parse_short_time(str(raw_end)), timezone_name)
+                try:
+                    if isinstance(raw_end, datetime):
+                        # Generated templates export complete end datetimes, so a
+                        # real end date must survive the round trip for overnight
+                        # periods. Excel time-only cells surface as datetimes near
+                        # the 1899/1900 epoch and carry no usable date.
+                        end_date = (
+                            raw_end.date()
+                            if raw_end.date() >= start.date()
+                            else start.date()
+                        )
+                        end = _aware_datetime(end_date, raw_end.time(), timezone_name)
+                    elif isinstance(raw_end, time):
+                        end = _aware_datetime(start.date(), raw_end, timezone_name)
+                    else:
+                        end = _aware_datetime(start.date(), _parse_short_time(str(raw_end)), timezone_name)
+                except (TypeError, ValueError) as exc:
+                    notices.append(ImportNotice("error", "invalid_slot_label", f"Could not parse end time for {label!r}: {exc}", f"{worksheet.title}!row {row_number}"))
+                    continue
+                if end == start:
+                    notices.append(ImportNotice("error", "invalid_slot_label", f"Period {label!r} has a zero-length time range.", f"{worksheet.title}!row {row_number}"))
+                    continue
+                if end < start:
+                    # A forward time earlier than the start is an overnight
+                    # period that ends on the next day.
+                    end += timedelta(days=1)
 
             try:
                 capacity = nonnegative_integer(row[columns["capacity"]])
@@ -387,6 +459,7 @@ def parse_student_schedule(
     notices: list[ImportNotice] = []
     period_notices: list[ImportNotice] = []
     periods_by_id: dict[str, ParsedSlot] = {}
+    weekday_mismatches: set[str] = set()
     normalized_whitespace = 0
 
     roster: list[str] = []
@@ -430,29 +503,36 @@ def parse_student_schedule(
             continue
         best_row: int | None = None
         best_headers: list[tuple[int, date]] = []
+        invalid_headers_by_row: dict[int, list[str]] = {}
         for row_index in range(1, min(15, worksheet.max_row) + 1):
             headers: list[tuple[int, date]] = []
             for column_index in range(1, worksheet.max_column + 1):
                 value = worksheet.cell(row_index, column_index).value
                 match = _DATE_IN_PARENS.search(str(value or ""))
                 if match:
-                    headers.append((column_index, date(year, int(match.group(1)), int(match.group(2)))))
+                    try:
+                        header_date = date(year, int(match.group(1)), int(match.group(2)))
+                    except ValueError:
+                        invalid_headers_by_row.setdefault(row_index, []).append(str(value).strip())
+                        continue
+                    headers.append((column_index, header_date))
             if len(headers) > len(best_headers):
                 best_row, best_headers = row_index, headers
 
         if best_row is None or not best_headers:
             continue
+        for header_label in invalid_headers_by_row.get(best_row, []):
+            notices.append(ImportNotice("error", "invalid_date_header", f"Date heading {header_label!r} is not a real calendar date, so its column was skipped.", worksheet.title))
 
-        range_value = None
+        parsed_range: tuple[time, time] | None = None
         for row_index in range(max(1, best_row - 3), best_row):
             for column_index in range(1, min(3, worksheet.max_column) + 1):
                 candidate = str(worksheet.cell(row_index, column_index).value or "")
-                if _parse_time_range(candidate):
-                    range_value = candidate
+                parsed_range = _try_parse_time_range(candidate)
+                if parsed_range:
                     break
-            if range_value:
+            if parsed_range:
                 break
-        parsed_range = _parse_time_range(range_value or "")
         if not parsed_range:
             notices.append(ImportNotice("warning", "sheet_ignored_no_time_range", f"Ignored sheet {worksheet.title!r}: date headers were found but no time range was recognized.", worksheet.title))
             continue
@@ -460,6 +540,10 @@ def parse_student_schedule(
 
         for column_index, source_date in best_headers:
             header_label = str(worksheet.cell(best_row, column_index).value or "").strip()
+            mismatch = _weekday_mismatch(header_label, source_date)
+            if mismatch and mismatch not in weekday_mismatches:
+                weekday_mismatches.add(mismatch)
+                notices.append(ImportNotice("warning", "date_weekday_mismatch", mismatch, worksheet.title))
             start = _aware_datetime(source_date, start_time, timezone_name)
             end = _aware_datetime(source_date, end_time, timezone_name)
             if end <= start:
@@ -543,7 +627,7 @@ def parse_adcom_availability(source: WorkbookSource, *, year: int) -> ParsedAvai
         for row in worksheet.iter_rows(values_only=True):
             for value in row:
                 text = str(value or "")
-                if _DATE_IN_PARENS.search(text) and _parse_time_range(text):
+                if _DATE_IN_PARENS.search(text) and _try_parse_time_range(text):
                     header_cells += 1
         if header_cells:
             preferred = 1 if normalized_title == "adcom availability" else 0
@@ -555,6 +639,8 @@ def parse_adcom_availability(source: WorkbookSource, *, year: int) -> ParsedAvai
         candidate_worksheets,
         key=lambda item: (item[0], item[1]),
     )
+    notices: list[ImportNotice] = []
+    weekday_mismatches: set[str] = set()
     header_rows: dict[int, list[tuple[int, date, time, time, str]]] = {}
     for row_index in range(1, worksheet.max_row + 1):
         headers = []
@@ -562,15 +648,27 @@ def parse_adcom_availability(source: WorkbookSource, *, year: int) -> ParsedAvai
             value = worksheet.cell(row_index, column_index).value
             text = str(value or "")
             date_match = _DATE_IN_PARENS.search(text)
-            parsed_range = _parse_time_range(text)
-            if date_match and parsed_range:
+            if not date_match:
+                continue
+            try:
+                parsed_range = _parse_time_range(text)
                 source_date = date(year, int(date_match.group(1)), int(date_match.group(2)))
+            except ValueError as exc:
+                # A dated cell with an unusable time range or calendar date is
+                # a skipped header the operator must know about; names beneath
+                # it would otherwise be dropped silently.
+                notices.append(ImportNotice("error", "invalid_time_header", f"Could not use the Adcom heading {text.strip()!r}: {exc}", worksheet.title))
+                continue
+            if parsed_range:
+                mismatch = _weekday_mismatch(text, source_date)
+                if mismatch and mismatch not in weekday_mismatches:
+                    weekday_mismatches.add(mismatch)
+                    notices.append(ImportNotice("warning", "date_weekday_mismatch", mismatch, worksheet.title))
                 headers.append((column_index, source_date, parsed_range[0], parsed_range[1], text.strip()))
         if headers:
             header_rows[row_index] = headers
 
     entries: list[ParsedAvailabilityEntry] = []
-    notices: list[ImportNotice] = []
     sorted_header_rows = sorted(header_rows)
     for position, row_index in enumerate(sorted_header_rows):
         next_row = sorted_header_rows[position + 1] if position + 1 < len(sorted_header_rows) else worksheet.max_row + 1

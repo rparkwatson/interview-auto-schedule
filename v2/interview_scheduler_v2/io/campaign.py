@@ -51,19 +51,43 @@ def _interviewers_from_availability(
     *,
     explicit_ids: Mapping[tuple[InterviewerGroup, str], str],
     historical_counts: Mapping[str, int],
-) -> tuple[list[Interviewer], dict[tuple[InterviewerGroup, str], str]]:
+) -> tuple[
+    list[Interviewer],
+    dict[tuple[InterviewerGroup, str], str],
+    list[ImportNotice],
+]:
     slots_by_name: dict[str, set[str]] = {}
     display_by_name: dict[str, str] = {}
+    merged_variants: dict[str, set[str]] = {}
     for name in parsed.names:
         normalized = normalize_name(name)
         display_by_name.setdefault(normalized, name)
+        merged_variants.setdefault(normalized, set()).add(name)
         slots_by_name.setdefault(normalized, set())
     for entry in parsed.entries:
         if entry.slot_id is None:
             continue
         normalized = normalize_name(entry.interviewer_name)
         display_by_name.setdefault(normalized, entry.interviewer_name)
+        merged_variants.setdefault(normalized, set()).add(entry.interviewer_name)
         slots_by_name.setdefault(normalized, set()).add(entry.slot_id)
+
+    notices: list[ImportNotice] = []
+    for normalized in sorted(merged_variants):
+        variants = merged_variants[normalized]
+        if len(variants) > 1:
+            listed = ", ".join(repr(variant) for variant in sorted(variants))
+            notices.append(
+                ImportNotice(
+                    "warning",
+                    "same_name_merged",
+                    (
+                        f"{group.label} entries {listed} were treated as one "
+                        "person. Correct the source file if they are "
+                        "different people."
+                    ),
+                )
+            )
 
     people: list[Interviewer] = []
     generated: dict[tuple[InterviewerGroup, str], str] = {}
@@ -75,7 +99,7 @@ def _interviewers_from_availability(
             explicit_id=explicit_id,
             available_slot_ids=sorted(slots_by_name.get(normalized, set())),
         )
-        prior = int(historical_counts.get(person.id, 0))
+        prior = historical_counts.get(person.id, 0)
         person = Interviewer(
             id=person.id,
             name=person.name,
@@ -85,7 +109,7 @@ def _interviewers_from_availability(
         )
         people.append(person)
         generated[(group, normalized)] = person.id
-    return people, generated
+    return people, generated, notices
 
 
 def _assemble_campaign(
@@ -98,13 +122,13 @@ def _assemble_campaign(
     locked_assignments: Sequence[LockedAssignment],
     periods_need_configuration: bool,
 ) -> CampaignImportResult:
-    student_people, student_ids = _interviewers_from_availability(
+    student_people, student_ids, student_merge_notices = _interviewers_from_availability(
         students,
         InterviewerGroup.STUDENT,
         explicit_ids=explicit_ids,
         historical_counts=historical_counts,
     )
-    adcom_people, adcom_ids = _interviewers_from_availability(
+    adcom_people, adcom_ids, adcom_merge_notices = _interviewers_from_availability(
         adcoms,
         InterviewerGroup.ADCOM,
         explicit_ids=explicit_ids,
@@ -125,7 +149,13 @@ def _assemble_campaign(
         slots=slots,
         locked_assignments=tuple(locked_assignments),
     )
-    notices = tuple(slot_set.notices + students.notices + adcoms.notices)
+    notices = tuple(
+        slot_set.notices
+        + students.notices
+        + adcoms.notices
+        + student_merge_notices
+        + adcom_merge_notices
+    )
     return CampaignImportResult(
         problem=problem,
         notices=notices,
